@@ -11,7 +11,7 @@ Phase 0 was executed on `hardening/phase-0`, based on `origin/security/hardening
 | Repository hygiene and governance | `3182975`; `LICENSE`, `SECURITY.md`, `PROGRESS.md`, `CHANGELOG.md`, `docs/`, archived reports | `git diff --check`; repository grep | Done locally |
 | Central settings and probes | `9946c30`; `backend/app/core/config.py`, `main.py`, `.env.example` | `python3 -m py_compile backend/app/main.py`; pytest | Done locally |
 | Explicit migrations | `9edeacf`, `841254b`; `001_initial.py`, migration test | `alembic upgrade`, `downgrade base`, `upgrade head` on fresh SQLite; `alembic check` on fresh SQLite | Passed on SQLite; PostgreSQL still required |
-| CI gates | `321583b`; `.github/workflows/ci.yml` | Action SHAs resolved from upstream tag refs; workflow not run locally | Added; GitHub execution pending |
+| CI gates | local backup commit `321583b`; workflow file excluded from published branch | GitHub rejected workflow update due App permission | Blocked for publication |
 | Baseline and health tests | `65a9007`; tests and `docs/performance.md` | `pytest -q backend`: 5 passed, 1 skipped; frontend `npm run build` passed | Local smoke/build baseline done |
 
 ## Commands actually run
@@ -28,7 +28,7 @@ Phase 0 was executed on `hardening/phase-0`, based on `origin/security/hardening
 ## Not implemented or not verified
 
 - Full behavior-preserving extraction of `main.py` into all target modules is not complete. The current API remains compatible and the target structure is documented, but the refactor is deliberately left open rather than claimed complete.
-- PostgreSQL/Redis integration and concurrency tests were not executed locally because Docker is unavailable. CI configuration exists but has not run in this session.
+- PostgreSQL/Redis integration and concurrency tests were not executed locally because Docker is unavailable. CI configuration exists only in the local backup branch `hardening/phase-0-with-ci`; GitHub rejected its publication due missing `workflows` permission.
 - `ruff`, `mypy`, `pip-audit`, Semgrep, gitleaks and Trivy were not available locally; CI invokes them.
 - Backend lockfile with hashes and Docker image digest pinning remain open; no unverified versions or digests were added.
 - Full structured JSON logging and a complete architectural import-boundary test remain open.

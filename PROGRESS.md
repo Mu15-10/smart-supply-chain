@@ -24,7 +24,7 @@
 - [blocked] Modular monolith extraction requires a larger behavior-preserving refactor and remains open in phase 0
 - [doing] PostgreSQL/Redis integration test path (CI configuration added; local Docker unavailable)
 - [doing] Request IDs and health readiness; structured JSON logging remains open
-- [done] CI quality/security gates added; execution pending GitHub
+- [blocked] CI workflow prepared locally but not publishable with current GitHub App workflow permission
 - [done] Local build baseline; load baseline remains open
 
 ## Open decisions
