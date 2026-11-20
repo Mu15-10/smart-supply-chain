@@ -5,11 +5,23 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ["JWT_SECRET"] = "test-secret-with-at-least-32-characters-long"
 
 from fastapi.testclient import TestClient
-from app.main import Base, engine, app
+import pytest
+
+from app.main import Base, engine, app, rds
 
 Base.metadata.drop_all(engine)
 Base.metadata.create_all(engine)
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_redis_limiter():
+    if rds is not None:
+        try:
+            rds.flushdb()
+        except Exception:
+            pass
+    yield
 
 
 def register(email, tenant_code, tenant_name):
