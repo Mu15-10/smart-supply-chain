@@ -16,6 +16,16 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
     ports: ["127.0.0.1:6379:6379"]
+  migrate:
+    build: .
+    command: alembic upgrade head
+    env_file: [.env]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-supply}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-supply}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+    depends_on: {postgres: {condition: service_healthy}}
   auth:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -27,7 +37,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
     ports: ["127.0.0.1:8001:8000"]
-    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}}
+    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}, migrate: {condition: service_completed_successfully}}
   supplier:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -39,7 +49,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
     ports: ["127.0.0.1:8002:8000"]
-    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}}
+    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}, migrate: {condition: service_completed_successfully}}
   inventory:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -51,7 +61,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
     ports: ["127.0.0.1:8003:8000"]
-    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}}
+    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}, migrate: {condition: service_completed_successfully}}
   order:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -63,5 +73,5 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
     ports: ["127.0.0.1:8004:8000"]
-    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}}
+    depends_on: {postgres: {condition: service_healthy}, mongo: {condition: service_started}, redis: {condition: service_started}, migrate: {condition: service_completed_successfully}}
 volumes: {pgdata: {}, mongodata: {}}

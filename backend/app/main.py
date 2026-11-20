@@ -522,3 +522,17 @@ def approve_po(po_id: str, c=Depends(require_roles("admin"))):
 @app.post("/purchase-orders/{po_id}/receive")
 def receive_po(po_id: str, key: Optional[str] = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))):
     return transition_po(po_id, "receive", ("admin", "inventory"), c, key)
+
+if SERVICE != "all":
+    service_prefixes = {
+        "auth": ("/auth",),
+        "supplier": ("/suppliers", "/products", "/warehouses"),
+        "inventory": ("/inventory",),
+        "order": ("/purchase-orders",),
+    }
+    allowed = service_prefixes.get(SERVICE, ())
+    app.router.routes = [
+        route for route in app.router.routes
+        if getattr(route, "path", "") == "/health"
+        or any(getattr(route, "path", "").startswith(prefix) for prefix in allowed)
+    ]
