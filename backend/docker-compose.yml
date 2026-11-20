@@ -10,6 +10,9 @@ services:
     healthcheck: {test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"], interval: 5s, timeout: 5s, retries: 10}
   mongo:
     image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-madar}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
     ports: ["127.0.0.1:27017:27017"]
     volumes: ["mongodata:/data/db"]
   redis:

@@ -13,13 +13,13 @@ client = TestClient(app)
 
 
 def register(email, tenant_code, tenant_name):
-    response = client.post("/auth/register", json={"email": email, "password": "password123", "display_name": email, "tenant_code": tenant_code, "tenant_name": tenant_name})
+    response = client.post("/auth/register", json={"email": email, "password": "Madar!Secure2026", "display_name": email, "tenant_code": tenant_code, "tenant_name": tenant_name})
     assert response.status_code == 201, response.text
     return response.json()["data"]
 
 
 def token(email):
-    return client.post("/auth/login", json={"email": email, "password": "password123"}).json()["access_token"]
+    return client.post("/auth/login", json={"email": email, "password": "Madar!Secure2026"}).json()["access_token"]
 
 
 def headers(access_token, key=None):
@@ -50,7 +50,7 @@ def test_existing_tenant_requires_invitation_and_cross_tenant_order_is_blocked()
     supplier = client.post("/suppliers", headers=headers(owner), json={"supplier_code": "SUP-X", "legal_name": "Private Supplier"}).json()["data"]
     warehouse = client.post("/warehouses", headers=headers(owner), json={"code": "WH-X", "name": "Private Warehouse"}).json()["data"]
     product = client.post("/products", headers=headers(owner), json={"sku": "SKU-X", "name": "Private Product"}).json()["data"]
-    duplicate = client.post("/auth/register", json={"email": "attacker@example.com", "password": "password123", "display_name": "Attacker", "tenant_code": "tenant-owner", "tenant_name": "Owner Tenant"})
+    duplicate = client.post("/auth/register", json={"email": "attacker@example.com", "password": "Madar!Secure2026", "display_name": "Attacker", "tenant_code": "tenant-owner", "tenant_name": "Owner Tenant"})
     assert duplicate.status_code == 409
     register("buyer-b@example.com", "tenant-b", "Tenant B")
     other = token("buyer-b@example.com")

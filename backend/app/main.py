@@ -1,4 +1,6 @@
 import hashlib
+import ipaddress
+import logging
 import json
 import os
 import secrets
@@ -9,10 +11,10 @@ from typing import Literal, Optional
 
 import jwt
 import redis
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from pymongo import MongoClient
 from sqlalchemy import (
     DateTime, ForeignKey, Integer, JSON, Numeric, String, UniqueConstraint,
@@ -21,6 +23,8 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
+logger = logging.getLogger("madar.security")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 SERVICE = os.getenv("SERVICE", "all")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./supply.db")
@@ -50,6 +54,17 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(200))
     password_hash: Mapped[str] = mapped_column(String(255))
     roles: Mapped[list] = mapped_column(JSON, default=lambda: ["viewer"])
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    family_id: Mapped[str] = mapped_column(String(36), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Supplier(Base):
     __tablename__ = "suppliers"
@@ -148,6 +163,14 @@ class Invitation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+DUMMY_PASSWORD_HASH = pwd.hash(secrets.token_urlsafe(32))
+TRUSTED_PROXY_COUNT = max(0, int(os.getenv("TRUSTED_PROXY_COUNT", "0")))
+LOGIN_MAX_PER_IP = int(os.getenv("LOGIN_MAX_PER_IP", "20"))
+LOGIN_MAX_PER_ACCOUNT_IP = int(os.getenv("LOGIN_MAX_PER_ACCOUNT_IP", "5"))
+LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
+ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "15"))
+REFRESH_TOKEN_DAYS = int(os.getenv("REFRESH_TOKEN_DAYS", "7"))
+ALLOW_PUBLIC_REGISTRATION = os.getenv("ALLOW_PUBLIC_REGISTRATION", "false" if ENVIRONMENT == "production" else "true").lower() == "true"
 try:
     rds = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
 except Exception:
@@ -159,7 +182,19 @@ except Exception:
 
 app = FastAPI(title=f"Madar Supply Control - {SERVICE} service", version="0.3.0")
 origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+if ENVIRONMENT == "production" and (not origins or "*" in origins or any(o.startswith("http://") and "localhost" not in o for o in origins)):
+    raise RuntimeError("Production ALLOWED_ORIGINS must contain explicit HTTPS origins")
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Authorization", "Content-Type", "Idempotency-Key"], max_age=600)
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+    if request.url.path.startswith("/auth/"): response.headers["Cache-Control"] = "no-store"
+    if ENVIRONMENT == "production": response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 @app.exception_handler(IntegrityError)
 def integrity_error_handler(request, exc):
@@ -176,16 +211,54 @@ def emit(db, tenant_id, event_type, aggregate_id, payload):
         if mongo is not None:
             mongo.events.insert_one({"_id": event_id, "tenantId": tenant_id, "type": event_type, "aggregateId": aggregate_id, "data": payload, "occurredAt": datetime.now(timezone.utc)})
     except Exception:
-        pass
+        logger.warning("Mongo event delivery failed; transactional outbox retained")
     return event_id
+
+def get_client_ip(request: Request) -> str:
+    fallback = request.client.host if request.client else "unknown"
+    if TRUSTED_PROXY_COUNT <= 0: return fallback
+    values = [v.strip() for v in request.headers.get("X-Forwarded-For", "").split(",") if v.strip()]
+    candidate = values[len(values) - TRUSTED_PROXY_COUNT] if len(values) >= TRUSTED_PROXY_COUNT else ""
+    try: ipaddress.ip_address(candidate); return candidate
+    except ValueError: return fallback
+
+def redis_available():
+    try:
+        if not rds: raise RuntimeError("redis unavailable")
+        rds.ping(); return True
+    except Exception:
+        if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+        logger.warning("Redis unavailable; development security controls are degraded")
+        return False
+
+def check_limit(key, limit):
+    if not redis_available(): return
+    try:
+        if int(rds.get(key) or 0) >= limit:
+            raise HTTPException(429, "TOO_MANY_ATTEMPTS", headers={"Retry-After": str(max(1, int(rds.ttl(key))))})
+    except HTTPException: raise
+    except Exception:
+        if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+        logger.warning("Redis limiter read failed")
+
+def hit_limit(key, window=LOGIN_WINDOW_SECONDS):
+    if not rds: return
+    try:
+        count = rds.incr(key)
+        if count == 1: rds.expire(key, window)
+    except Exception:
+        if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+        logger.warning("Redis limiter write failed")
 
 def auth(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "UNAUTHENTICATED")
     try:
-        return jwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"], audience="madar-api", issuer="madar-auth", options={"require": ["sub", "tenant_id", "roles", "exp", "iss", "aud"]})
-    except Exception:
-        raise HTTPException(401, "UNAUTHENTICATED")
+        claims = jwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"], audience="madar-api", issuer="madar-auth", options={"require": ["sub", "tenant_id", "roles", "exp", "iss", "aud", "jti"]})
+        if redis_available() and rds.get(f"jwt-deny:{claims['jti']}"): raise HTTPException(401, "UNAUTHENTICATED")
+        return claims
+    except HTTPException: raise
+    except Exception: raise HTTPException(401, "UNAUTHENTICATED")
 
 def require_roles(*allowed_roles):
     def dependency(c=Depends(auth)):
@@ -230,26 +303,42 @@ def finish_idem(row, response):
     row.response = response
     row.status = "done"
 
+def password_is_weak(value: str, email: str) -> bool:
+    local = email.split("@", 1)[0].lower()
+    if len(value) < 10 or len(value) > 128 or (local and local in value.lower()): return True
+    if len(set(value)) == 1 or value in {"0123456789", "1234567890", "abcdefghijklmnopqrstuvwxyz", "qwertyuiop"}: return True
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "common_passwords.txt"), encoding="utf-8") as f:
+            if value.lower() in {line.strip().lower() for line in f if line.strip()}: return True
+    except OSError: logger.warning("Common password list unavailable")
+    return False
+
 class Register(BaseModel):
-    email: str
-    password: str = Field(min_length=8)
+    email: EmailStr
+    password: str = Field(min_length=10, max_length=128)
     display_name: str
     tenant_code: str = Field(min_length=2, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
     tenant_name: str = Field(min_length=2, max_length=200)
+    @model_validator(mode="after")
+    def validate_password(self):
+        if password_is_weak(self.password, str(self.email)): raise ValueError("PASSWORD_TOO_WEAK")
+        return self
 
 class Login(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(max_length=128)
 
 class InvitationIn(BaseModel):
-    email: str
+    email: EmailStr
     role: Literal["admin", "purchasing", "inventory", "viewer"]
 
 class AcceptInvitation(BaseModel):
     token: str = Field(min_length=20)
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=10, max_length=128)
     display_name: str = Field(min_length=1, max_length=200)
 
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=256)
 class SupplierIn(BaseModel):
     supplier_code: str
     legal_name: str
@@ -289,13 +378,16 @@ def health():
     return {"status": "ok", "service": SERVICE, "environment": ENVIRONMENT}
 
 @app.post("/auth/register", status_code=201)
-def register(x: Register):
+def register(request: Request, x: Register):
+    if not ALLOW_PUBLIC_REGISTRATION: raise HTTPException(403, "REGISTRATION_DISABLED")
+    check_limit(f"registration:{get_client_ip(request)}", 5)
+    email = str(x.email).strip().lower()
     with Session(engine) as db:
-        if db.scalar(select(Tenant).where(Tenant.code == x.tenant_code)):
-            raise HTTPException(409, "TENANT_CODE_TAKEN_USE_INVITATION")
-        email = x.email.strip().lower()
-        if db.scalar(select(User).where(User.email == email)):
-            raise HTTPException(409, "EMAIL_ALREADY_REGISTERED")
+        tenant_exists = db.scalar(select(Tenant).where(Tenant.code == x.tenant_code)) is not None
+        email_exists = db.scalar(select(User).where(User.email == email)) is not None
+        if tenant_exists or email_exists:
+            logger.info("Registration conflict for normalized identity")
+            raise HTTPException(409, "REGISTRATION_FAILED")
         tenant = Tenant(id=str(uuid.uuid4()), code=x.tenant_code, name=x.tenant_name)
         db.add(tenant)
         db.flush()
@@ -305,43 +397,81 @@ def register(x: Register):
         return {"data": {"id": user.id, "tenant_id": tenant.id, "email": user.email, "roles": user.roles}}
 
 @app.post("/auth/login")
-def login(x: Login):
-    email = x.email.strip().lower()
-    client_key = f"login-fail:{email}:{os.getenv('CLIENT_IP', 'unknown')}"
-    try:
-        if rds and int(rds.get(client_key) or 0) >= 5:
-            raise HTTPException(429, "INVALID_CREDENTIALS")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+def login(request: Request, x: Login):
+    email = str(x.email).strip().lower()
+    ip = get_client_ip(request)
+    acct_key = f"login-fail:acct:{email}:{ip}"
+    ip_key = f"login-fail:ip:{ip}"
+    check_limit(ip_key, int(os.getenv("LOGIN_MAX_PER_IP", "20")))
+    check_limit(acct_key, int(os.getenv("LOGIN_MAX_PER_ACCOUNT_IP", "5")))
     with Session(engine) as db:
         user = db.scalar(select(User).where(User.email == email))
-        if not user or not pwd.verify(x.password, user.password_hash):
-            try:
-                if rds:
-                    count = rds.incr(client_key)
-                    if count == 1:
-                        rds.expire(client_key, 900)
-            except Exception:
-                pass
+        valid = pwd.verify(x.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
+        if not user or not valid:
+            hit_limit(ip_key); hit_limit(acct_key)
             raise HTTPException(401, "INVALID_CREDENTIALS")
-        try:
-            if rds:
-                rds.delete(client_key)
+        if rds:
+            try: rds.delete(acct_key)
+            except Exception: logger.warning("Redis account limiter cleanup failed")
+        now = datetime.now(timezone.utc)
+        jti = str(uuid.uuid4())
+        token = jwt.encode({"sub": user.id, "tenant_id": user.tenant_id, "roles": user.roles, "jti": jti, "iss": "madar-auth", "aud": "madar-api", "exp": now + timedelta(minutes=int(os.getenv("ACCESS_TOKEN_MINUTES", "15")))}, JWT_SECRET, algorithm="HS256")
+        raw_refresh = secrets.token_urlsafe(48)
+        db.add(RefreshToken(id=str(uuid.uuid4()), user_id=user.id, tenant_id=user.tenant_id, token_hash=hashlib.sha256(raw_refresh.encode()).hexdigest(), family_id=str(uuid.uuid4()), expires_at=now + timedelta(days=int(os.getenv("REFRESH_TOKEN_DAYS", "7")))))
+        db.commit()
+        return {"access_token": token, "refresh_token": raw_refresh, "token_type": "bearer", "roles": user.roles}
+
+@app.post("/auth/refresh")
+def refresh(request: Request, x: RefreshIn):
+    ip = get_client_ip(request)
+    refresh_key = f"refresh:{ip}"
+    check_limit(refresh_key, 30)
+    hit_limit(refresh_key, 60)
+    token_hash = hashlib.sha256(x.refresh_token.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash).with_for_update())
+        if not row or row.expires_at.replace(tzinfo=timezone.utc) <= now:
+            raise HTTPException(401, "UNAUTHENTICATED")
+        if row.revoked_at:
+            db.query(RefreshToken).filter(RefreshToken.family_id == row.family_id, RefreshToken.revoked_at.is_(None)).update({"revoked_at": now})
+            db.commit()
+            raise HTTPException(401, "REFRESH_TOKEN_REUSE_DETECTED")
+        user = db.scalar(select(User).where(User.id == row.user_id, User.tenant_id == row.tenant_id))
+        if not user: raise HTTPException(401, "UNAUTHENTICATED")
+        row.revoked_at = now
+        raw = secrets.token_urlsafe(48)
+        db.add(RefreshToken(id=str(uuid.uuid4()), user_id=user.id, tenant_id=user.tenant_id, token_hash=hashlib.sha256(raw.encode()).hexdigest(), family_id=row.family_id, expires_at=now + timedelta(days=int(os.getenv("REFRESH_TOKEN_DAYS", "7")))))
+        access = jwt.encode({"sub": user.id, "tenant_id": user.tenant_id, "roles": user.roles, "jti": str(uuid.uuid4()), "iss": "madar-auth", "aud": "madar-api", "exp": now + timedelta(minutes=int(os.getenv("ACCESS_TOKEN_MINUTES", "15")))}, JWT_SECRET, algorithm="HS256")
+        db.commit()
+        return {"access_token": access, "refresh_token": raw, "token_type": "bearer", "roles": user.roles}
+
+@app.post("/auth/logout")
+def logout(x: RefreshIn, authorization: Optional[str] = Header(None)):
+    claims = auth(authorization)
+    exp = int(claims["exp"]) - int(datetime.now(timezone.utc).timestamp())
+    if rds and exp > 0:
+        try: rds.setex(f"jwt-deny:{claims['jti']}", exp, "1")
         except Exception:
-            pass
-        token = jwt.encode({"sub": user.id, "tenant_id": user.tenant_id, "roles": user.roles, "iss": "madar-auth", "aud": "madar-api", "exp": datetime.now(timezone.utc) + timedelta(hours=8)}, JWT_SECRET, algorithm="HS256")
-        return {"access_token": token, "token_type": "bearer", "roles": user.roles}
+            if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+            logger.warning("Redis logout deny-list write failed")
+    token_hash = hashlib.sha256(x.refresh_token.encode()).hexdigest()
+    with Session(engine) as db:
+        row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash, RefreshToken.user_id == claims["sub"]))
+        if row and not row.revoked_at:
+            row.revoked_at = datetime.now(timezone.utc); db.commit()
+    return {"data": {"logged_out": True}}
 
 @app.post("/auth/invitations", status_code=201)
 def create_invitation(x: InvitationIn, c=Depends(require_roles("admin"))):
     raw = secrets.token_urlsafe(32)
     with Session(engine) as db:
-        invitation = Invitation(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], email=x.email.strip().lower(), role=x.role, token_hash=hashlib.sha256(raw.encode()).hexdigest(), expires_at=datetime.now(timezone.utc) + timedelta(hours=72))
+        invitation = Invitation(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], email=str(x.email).strip().lower(), role=x.role, token_hash=hashlib.sha256(raw.encode()).hexdigest(), expires_at=datetime.now(timezone.utc) + timedelta(hours=72))
         db.add(invitation)
         db.commit()
-        return {"data": {"id": invitation.id, "email": invitation.email, "role": invitation.role, "expiresAt": invitation.expires_at.isoformat(), "token": raw}}
+        result = {"id": invitation.id, "email": invitation.email, "role": invitation.role, "expiresAt": invitation.expires_at.isoformat()}
+        if os.getenv("RETURN_INVITATION_TOKEN", "false" if ENVIRONMENT == "production" else "true").lower() == "true": result["token"] = raw
+        return Response(content=json.dumps({"data": result}), media_type="application/json", headers={"Cache-Control": "no-store"})
 
 @app.post("/auth/accept-invitation", status_code=201)
 def accept_invitation(x: AcceptInvitation):
@@ -351,7 +481,9 @@ def accept_invitation(x: AcceptInvitation):
         if not invite or invite.used_at or invite.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
             raise HTTPException(400, "INVITATION_INVALID_OR_EXPIRED")
         if db.scalar(select(User).where(User.email == invite.email)):
-            raise HTTPException(409, "EMAIL_ALREADY_REGISTERED")
+            raise HTTPException(409, "REGISTRATION_FAILED")
+        if password_is_weak(x.password, invite.email):
+            raise HTTPException(422, "PASSWORD_TOO_WEAK")
         user = User(id=str(uuid.uuid4()), tenant_id=invite.tenant_id, email=invite.email, display_name=x.display_name, password_hash=pwd.hash(x.password), roles=[invite.role])
         db.add(user)
         invite.used_at = datetime.now(timezone.utc)

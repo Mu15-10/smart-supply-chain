@@ -44,3 +44,8 @@ pytest -q
 ## حدود MVP
 
 النسخة لا تزال بحاجة إلى invitation service دائم، Alembic migrations، PostgreSQL RLS، publisher فعلي للأحداث، OIDC/2FA، وKubernetes. واجهة لوحة التحكم الحالية تدعم Demo محليًا، مع تجهيزات الربط بالـAPI كخطوة تشغيلية لاحقة.
+
+
+## Security hardening
+
+For production set explicit HTTPS `ALLOWED_ORIGINS`, a strong `JWT_SECRET`, Mongo/Redis/Postgres credentials, and `ALLOW_PUBLIC_REGISTRATION=false`. Run `alembic upgrade head` before starting services. GitHub Pages requires the API origin in the build CSP and CORS allow-list.
