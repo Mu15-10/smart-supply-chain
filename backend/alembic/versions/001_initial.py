@@ -13,8 +13,7 @@ depends_on = None
 
 def upgrade():
     op.create_table("tenants",
-        sa.Column("id", sa.String(36), primary_key=True), sa.Column("code", sa.String(80), nullable=False), sa.Column("name", sa.String(200), nullable=False),
-        sa.UniqueConstraint("code", name="uq_tenants_code"))
+        sa.Column("id", sa.String(36), primary_key=True), sa.Column("code", sa.String(80), nullable=False), sa.Column("name", sa.String(200), nullable=False))
     op.create_index("ix_tenants_code", "tenants", ["code"], unique=True)
     op.create_table("users",
         sa.Column("id", sa.String(36), primary_key=True), sa.Column("tenant_id", sa.String(36), sa.ForeignKey("tenants.id"), nullable=False), sa.Column("email", sa.String(255), nullable=False), sa.Column("display_name", sa.String(200), nullable=False), sa.Column("password_hash", sa.String(255), nullable=False), sa.Column("roles", sa.JSON, nullable=False), sa.UniqueConstraint("email", name="uq_users_email"))
