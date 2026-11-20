@@ -1,3 +1,4 @@
+Historical document: retained for audit context; current status is maintained in docs/ and PROGRESS.md.
 # تقرير تنفيذ إصلاحات مدار الإمداد
 
 ## ما تم تنفيذه

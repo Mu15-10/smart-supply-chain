@@ -1,3 +1,4 @@
+Historical document: retained for audit context; current status is maintained in docs/ and PROGRESS.md.
 # تقرير مراجعة كود نظام مدار الإمداد
 
 **التاريخ:** 19 نوفمبر 2026
