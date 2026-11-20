@@ -6,8 +6,8 @@
 
 - `backend/`: FastAPI، PostgreSQL، MongoDB، Redis، Docker Compose، Alembic واختبارات API.
 - `dashboard/`: لوحة تشغيل React/Vite عربية RTL. الوضع الافتراضي Demo؛ لتفعيل API الحقيقي استخدم `VITE_API_MODE=live` واضبط `VITE_AUTH_URL` و`VITE_SUPPLIER_URL` و`VITE_INVENTORY_URL` و`VITE_ORDER_URL`.
-- `CODE-REVIEW.md`: نتائج المراجعة الأمنية والهندسية.
-- `IMPLEMENTATION-REPORT.md`: مراحل الإصلاح ونتائج التحقق الفعلية.
+- `docs/archive/CODE-REVIEW.md`: تقرير تاريخي مؤرشف.
+- `docs/archive/IMPLEMENTATION-REPORT.md`: تقرير تاريخي مؤرشف.
 
 ## تشغيل آمن
 

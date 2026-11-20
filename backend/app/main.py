@@ -1,6 +1,7 @@
 import hashlib
 import ipaddress
 import logging
+import re
 import json
 import os
 import secrets
@@ -13,6 +14,7 @@ import jwt
 import redis
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from .core.config import get_settings
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from pymongo import MongoClient
@@ -33,6 +35,7 @@ if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET must be configured")
 if len(JWT_SECRET) < 32:
     raise RuntimeError("JWT_SECRET must be at least 32 characters")
+settings = get_settings()
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
@@ -180,11 +183,20 @@ try:
 except Exception:
     mongo = None
 
-app = FastAPI(title=f"Madar Supply Control - {SERVICE} service", version="0.3.0")
+app = FastAPI(title=f"Madar Supply Control - {SERVICE} service", version="0.3.0", docs_url=None if ENVIRONMENT == "production" else "/docs", redoc_url=None if ENVIRONMENT == "production" else "/redoc", openapi_url=None if ENVIRONMENT == "production" else "/openapi.json")
 origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
 if ENVIRONMENT == "production" and (not origins or "*" in origins or any(o.startswith("http://") and "localhost" not in o for o in origins)):
     raise RuntimeError("Production ALLOWED_ORIGINS must contain explicit HTTPS origins")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Authorization", "Content-Type", "Idempotency-Key"], max_age=600)
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    supplied = request.headers.get("X-Request-ID", "")
+    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", supplied) else str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -372,6 +384,25 @@ class POIn(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=3)
     lines: list[LineIn] = Field(min_length=1)
     notes: str | None = None
+
+@app.get("/health/live")
+def health_live():
+    return {"status": "ok"}
+
+@app.get("/health/ready")
+def health_ready():
+    checks = {"database": False, "redis": False}
+    try:
+        with engine.connect() as connection: connection.exec_driver_sql("SELECT 1")
+        checks["database"] = True
+    except Exception:
+        logger.warning("Readiness database check failed")
+    try:
+        if rds: rds.ping(); checks["redis"] = True
+    except Exception:
+        logger.warning("Readiness Redis check failed")
+    if not all(checks.values()): raise HTTPException(503, {"status": "not_ready", "checks": checks})
+    return {"status": "ready", "checks": checks}
 
 @app.get("/health")
 def health():
