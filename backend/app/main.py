@@ -17,12 +17,9 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./supply.db")
 JWT_SECRET = os.getenv("JWT_SECRET")
 if not JWT_SECRET:
-    if ENVIRONMENT in {"development", "test"}:
-        JWT_SECRET = "local-development-secret-change-before-shared-use-2026"
-    else:
-        raise RuntimeError("JWT_SECRET must be configured outside development")
-if ENVIRONMENT not in {"development", "test"} and len(JWT_SECRET) < 32:
-    raise RuntimeError("JWT_SECRET must be at least 32 characters outside development")
+    raise RuntimeError("JWT_SECRET must be configured")
+if len(JWT_SECRET) < 32:
+    raise RuntimeError("JWT_SECRET must be at least 32 characters")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 

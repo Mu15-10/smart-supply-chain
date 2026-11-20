@@ -6,9 +6,15 @@
 
 ```bash
 cp .env.example .env
-# غيّر JWT_SECRET إلى قيمة عشوائية طويلة قبل أي تشغيل مشترك
+# غيّر POSTGRES_PASSWORD و REDIS_PASSWORD و JWT_SECRET قبل أي تشغيل مشترك.
+# python -c "import secrets; print(secrets.token_urlsafe(48))"
+docker compose config
 docker compose up --build
 ```
+
+Compose يرفض الإقلاع عند غياب `JWT_SECRET` أو كلمات مرور PostgreSQL وRedis. كل منافذ
+قواعد البيانات والخدمات مربوطة على `127.0.0.1` فقط؛ التواصل الداخلي بين الحاويات يستخدم
+أسماء الخدمات. لا تضع ملف `.env` في Git.
 
 الخدمات: Auth `:8001`، Supplier `:8002`، Inventory `:8003`، وOrder `:8004`. قواعد البيانات مربوطة على localhost فقط في Compose، بينما تتواصل الخدمات داخليًا عبر شبكة Docker.
 
@@ -26,7 +32,7 @@ docker compose up --build
 - الكتابة محمية بأدوار: `admin`، `purchasing`، و`inventory` حسب العملية.
 - كل supplier وwarehouse وproduct وpurchase order يُتحقق من `tenant_id` في الاستعلام نفسه.
 - أنواع حركة المخزون المسموحة: `receipt` و`adjustment` و`issue` فقط.
-- خارج `development` و`test` يفشل التطبيق عند غياب `JWT_SECRET` أو قصره عن 32 حرفًا.
+- يفشل التطبيق عند غياب `JWT_SECRET` أو قصره عن 32 حرفًا في كل البيئات.
 
 ## الاختبار
 
