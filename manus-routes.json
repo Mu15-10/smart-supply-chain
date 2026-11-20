@@ -1,0 +1,1 @@
+{"routes":[{"path":"/","title":"لوحة التشغيل"},{"path":"/suppliers","title":"الموردون"},{"path":"/products","title":"المنتجات"},{"path":"/warehouses","title":"المستودعات"},{"path":"/inventory","title":"المخزون"},{"path":"/orders","title":"أوامر الشراء"}]}
