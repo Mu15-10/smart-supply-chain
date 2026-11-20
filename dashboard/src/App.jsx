@@ -5,7 +5,7 @@ import {
   ShoppingCart, Truck, Users, X, Warehouse as WarehouseIcon
 } from 'lucide-react'
 import { initialData } from './data'
-import { loadDashboardSnapshot } from './api'
+import { adjustInventory, createPurchaseOrder, liveMode, loadDashboardSnapshot, login } from './api'
 
 const navItems = [
   { id: 'dashboard', label: 'لوحة التشغيل', icon: LayoutDashboard },
@@ -39,8 +39,15 @@ function EmptyNotice({ text }) {
   return <div className="empty-notice"><CircleHelp size={18} /><span>{text}</span></div>
 }
 
+function LoginPage({ onLogin, error, loading }) {
+  return <main className="login-shell" dir="rtl"><section className="login-card"><div className="brand"><div className="brand-mark"><span /></div><div><strong>مدار الإمداد</strong><small>MADAR SUPPLY CONTROL</small></div></div><h1>تسجيل الدخول</h1><p>ادخل إلى لوحة تشغيل سلسلة التوريد.</p><form onSubmit={onLogin}><Field label="البريد الإلكتروني" name="email" type="email" required placeholder="name@example.com" /><Field label="كلمة المرور" name="password" type="password" required placeholder="••••••••" /><button className="button button-primary full" disabled={loading}>{loading ? 'جارٍ التحقق…' : 'دخول آمن'}</button>{error && <div className="form-error" role="alert">تعذر تسجيل الدخول: {error}</div>}</form></section></main>
+}
+
 function App() {
   const [data, setData] = useState(initialData)
+  const [token, setToken] = useState(() => sessionStorage.getItem('madar_access_token') || '')
+  const [loading, setLoading] = useState(liveMode)
+  const [error, setError] = useState('')
   const [active, setActive] = useState('dashboard')
   const [search, setSearch] = useState('')
   const [orderFilter, setOrderFilter] = useState('all')
@@ -50,10 +57,12 @@ function App() {
 
   const showToast = (message) => { setToast(message); window.setTimeout(() => setToast(''), 2600) }
   useEffect(() => {
-    const accessToken = localStorage.getItem('madar_access_token')
-    if (import.meta.env.VITE_API_MODE !== 'live' || !accessToken) return
-    loadDashboardSnapshot(accessToken).then((snapshot) => setData((current) => ({ ...current, ...snapshot }))).catch(() => showToast('تعذر الاتصال بالـBackend؛ ما زالت بيانات المعاينة ظاهرة'))
-  }, [])
+    if (!liveMode || !token) { setLoading(false); return }
+    setLoading(true); setError('')
+    loadDashboardSnapshot(token).then((snapshot) => setData((current) => ({ ...current, ...snapshot }))).catch((err) => setError(err.message)).finally(() => setLoading(false))
+  }, [token])
+  const handleLogin = async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); setLoading(true); setError(''); try { const result = await login(form.get('email'), form.get('password')); sessionStorage.setItem('madar_access_token', result.access_token); setToken(result.access_token) } catch (err) { setError(err.message) } finally { setLoading(false) } }
+  if (liveMode && !token) return <LoginPage onLogin={handleLogin} error={error} loading={loading} />
   const currentLabel = navItems.find((item) => item.id === active)?.label || 'لوحة التشغيل'
   const lowStock = data.inventory.filter((item) => item.available <= item.reorder)
   const filteredInventory = useMemo(() => data.inventory.filter((item) => `${item.product} ${item.sku} ${item.warehouse}`.includes(search)), [data.inventory, search])
@@ -89,8 +98,9 @@ function App() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><button className="mobile-menu icon-button" aria-label="فتح القائمة" onClick={() => setMobileNav(true)}><Menu size={20} /></button><div className="breadcrumb"><span>الرئيسية</span><span>/</span><strong>{currentLabel}</strong></div><div className="top-actions"><div className="connection-pill"><span /> بيانات تجريبية</div><button className="icon-button notification-button" aria-label="الإشعارات غير متاحة في النسخة التجريبية"><Bell size={19} /><i /></button><div className="top-user" aria-label="حساب محمد حسين"><span>م</span><ChevronDown size={14} /></div></div></header>
+      <header className="topbar"><button className="mobile-menu icon-button" aria-label="فتح القائمة" onClick={() => setMobileNav(true)}><Menu size={20} /></button><div className="breadcrumb"><span>الرئيسية</span><span>/</span><strong>{currentLabel}</strong></div><div className="top-actions"><div className="connection-pill"><span /> {liveMode ? 'بيانات حية' : 'بيانات تجريبية'}</div><button className="icon-button notification-button" aria-label="الإشعارات غير متاحة في النسخة التجريبية"><Bell size={19} /><i /></button>{liveMode && <button className="button button-ghost" onClick={() => { sessionStorage.removeItem('madar_access_token'); setToken('') }}>خروج</button>}<div className="top-user" aria-label="حساب محمد حسين"><span>م</span><ChevronDown size={14} /></div></div></header>
       <div className="page-wrap">
+        {error && <div className="form-error" role="alert">تعذر تحميل البيانات الحية: {error}</div>}
         {active === 'dashboard' && <Dashboard data={data} lowStock={lowStock} onNavigate={setActive} onCreate={openCreate} />}
         {active === 'inventory' && <InventoryPage rows={filteredInventory} search={search} setSearch={setSearch} onCreate={() => openCreate('adjust')} />}
         {active === 'orders' && <OrdersPage rows={filteredOrders} search={search} setSearch={setSearch} filter={orderFilter} setFilter={setOrderFilter} onCreate={() => openCreate('order')} />}
