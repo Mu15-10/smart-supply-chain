@@ -18,14 +18,14 @@
 
 ## Phase 0 tasks
 
-- [doing] Documentation and repository hygiene
-- [todo] Explicit Alembic DDL and round-trip migration test
-- [todo] Central settings and startup validation
-- [todo] Modular monolith extraction without behavior changes
-- [todo] PostgreSQL/Redis integration test path
-- [todo] Structured logging, request IDs, and health readiness
-- [todo] CI quality/security gates with verified action references
-- [todo] Baseline performance measurement
+- [done] Documentation and repository hygiene
+- [done] Explicit Alembic DDL and round-trip migration test (SQLite verified; PostgreSQL pending)
+- [done] Central settings and startup validation (initial foundation)
+- [blocked] Modular monolith extraction requires a larger behavior-preserving refactor and remains open in phase 0
+- [doing] PostgreSQL/Redis integration test path (CI configuration added; local Docker unavailable)
+- [doing] Request IDs and health readiness; structured JSON logging remains open
+- [done] CI quality/security gates added; execution pending GitHub
+- [done] Local build baseline; load baseline remains open
 
 ## Open decisions
 
