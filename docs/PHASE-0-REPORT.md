@@ -8,11 +8,24 @@ Phase 0 was executed on `hardening/phase-0`, based on `origin/security/hardening
 
 | Task | Files/commits | Verification | Result |
 |---|---|---|---|
-| Repository hygiene and governance | `3182975`; `LICENSE`, `SECURITY.md`, `PROGRESS.md`, `CHANGELOG.md`, `docs/`, archived reports | `git diff --check`; repository grep | Done locally |
-| Central settings and probes | `9946c30`; `backend/app/core/config.py`, `main.py`, `.env.example` | `python3 -m py_compile backend/app/main.py`; pytest | Done locally |
-| Explicit migrations | `9edeacf`, `841254b`; `001_initial.py`, migration test | `alembic upgrade`, `downgrade base`, `upgrade head` on fresh SQLite; `alembic check` on fresh SQLite | Passed on SQLite; PostgreSQL still required |
+| Repository hygiene and governance | `64d4e68`; `LICENSE`, `SECURITY.md`, `PROGRESS.md`, `CHANGELOG.md`, `docs/`, archived reports | `git diff --check`; repository grep | Done locally |
+| Central settings and probes | `181cd24`; `backend/app/core/config.py`, `main.py`, `.env.example` | `python3 -m py_compile backend/app/main.py`; pytest | Done locally |
+| Explicit migrations | `2348664`, `e6d362f`; `001_initial.py`, migration test | `alembic upgrade`, `downgrade base`, `upgrade head` on fresh SQLite; `alembic check` on fresh SQLite | Passed on SQLite; PostgreSQL still required |
 | CI gates | local backup commit `321583b`; workflow file excluded from published branch | GitHub rejected workflow update due App permission | Blocked for publication |
-| Baseline and health tests | `65a9007`; tests and `docs/performance.md` | `pytest -q backend`: 5 passed, 1 skipped; frontend `npm run build` passed | Local smoke/build baseline done |
+| Baseline and health tests | `dd41dd3`; tests and `docs/performance.md` | `pytest -q backend`: 5 passed, 1 skipped; frontend `npm run build` passed | Local smoke/build baseline done |
+
+All commit IDs in this table were checked with `git cat-file -t` and resolve to commit objects. The
+earlier IDs from the pre-rewrite local history are intentionally not used as evidence for the
+published branch.
+
+## Imported foundation from `security/hardening` (not reviewed in Phase 0)
+
+This branch is based on `origin/security/hardening` at `367d2a7` and therefore includes previously
+imported security work. That imported baseline includes refresh-token rotation and logout/reuse
+detection, login limiting, registration/password hardening, security headers and HSTS, CORS
+controls, Mongo authentication configuration, and the common-passwords list. These changes were
+not independently reviewed as part of Phase 0; their endpoint-by-endpoint review belongs to the
+next security review gate and must not be treated as Phase 0 evidence.
 
 ## Commands actually run
 
@@ -32,7 +45,7 @@ Phase 0 was executed on `hardening/phase-0`, based on `origin/security/hardening
 - `ruff`, `mypy`, `pip-audit`, Semgrep, gitleaks and Trivy were not available locally; CI invokes them.
 - Backend lockfile with hashes and Docker image digest pinning remain open; no unverified versions or digests were added.
 - Full structured JSON logging and a complete architectural import-boundary test remain open.
-- The `manus-routes.json` files were retained because the project tooling references them; no deletion was performed without a stronger usage decision.
+- `dashboard/public/manus-routes.json` deletion is tracked as a separate Phase 0-B commit because the only repository reference found was the dashboard TODO entry.
 
 ## Remaining risks
 
