@@ -75,28 +75,30 @@ adjustments against the same row, and the same idempotency key.
   - `mypy backend/app --ignore-missing-imports`: **Success: no issues found in 3 source files**.
   - `alembic upgrade head && downgrade base && upgrade head && alembic check`: PostgreSQL
     `PostgresqlImpl`; **No new upgrade operations detected**.
-  - `pytest -s -q backend -rs`: **[test-bootstrap] database dialect: postgresql; 13 passed, 1 warning**.
+- `pytest -s -q backend -rs`: **[test-bootstrap] database dialect: postgresql; 13 passed, 1 warning**.
+- GitHub Foundation CI run [45192880315](https://github.com/Mu15-10/smart-supply-chain/actions/runs/45192880315): **success**.
+  Backend passed PostgreSQL/Redis pytest, Ruff, Ruff format, mypy, pip-audit, and the Alembic
+  round trip/check. Frontend passed npm audit and build. The secrets job passed gitleaks, and the
+  container job passed Docker build and Trivy.
 - Docker-dependent commands: not run because `docker` is not installed in the execution environment.
 
 ## Not implemented or not verified
 
 - Full behavior-preserving extraction of `main.py` into all target modules is not complete. The current API remains compatible and the target structure is documented, but the refactor is deliberately left open rather than claimed complete.
-- GitHub CI has not been run from the repository because the current GitHub App cannot publish
-  `.github/workflows/ci.yml`; no GitHub green-run URL exists yet. The local service-backed
-  PostgreSQL/Redis sequence is evidence for this checkout only, not a substitute for GitHub CI.
-- `pip-audit`, Semgrep, gitleaks and Trivy were not run locally; their CI execution remains
-  unverified. Ruff and mypy were installed and run successfully in this environment.
+- GitHub CI is now published and has a green run at the link above. `Semgrep` was not included in
+  this workflow and remains unverified; `pip-audit`, gitleaks and Trivy passed in GitHub CI.
+- Docker was not run locally; its GitHub CI build and Trivy scan passed.
 - Backend lockfile with hashes and Docker image digest pinning remain open; no unverified versions or digests were added.
 - Full structured JSON logging and a complete architectural import-boundary test remain open.
 - `dashboard/public/manus-routes.json` deletion is tracked as a separate Phase 0-B commit because the only repository reference found was the dashboard TODO entry.
 
 ## Remaining risks
 
-The current single-file backend remains harder to maintain than the target modular monolith. PostgreSQL-specific locking and migration behavior still needs CI evidence. The existing Docker images use tags rather than verified digests. Production readiness also requires the approved backups, monitoring, legal review, platform-admin TOTP and measured load test.
+The current single-file backend remains harder to maintain than the target modular monolith. The
+existing Docker images use tags rather than verified digests. Production readiness also requires
+the approved backups, monitoring, legal review, platform-admin TOTP and measured load test.
 
 ## Next gate
 
-Phase 0 is **not presented as fully complete** until the repository owner publishes the corrected
-workflow, provides a green GitHub CI run on PostgreSQL/Redis, and explicitly accepts the remaining
-foundation risks. No phase 1 work or `main.py` extraction should begin before written approval of
-this report and the CI gate.
+The technical CI gate is now green. Phase 0 still awaits the repository owner's written acceptance
+of this report before any phase 1 work or `main.py` extraction begins.
