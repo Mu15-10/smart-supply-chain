@@ -32,6 +32,7 @@ def _registration_payload(index: int) -> dict:
 
 @pytest.mark.skipif(not REDIS_LIVE, reason="requires a reachable Redis service")
 def test_registration_sixth_attempt_is_rate_limited():
+    # Models a real Redis-backed fixed-window limiter shared by requests from one client address.
     rds.flushdb()
     for index in range(5):
         response = client.post("/auth/register", json=_registration_payload(index))
@@ -44,6 +45,7 @@ def test_registration_sixth_attempt_is_rate_limited():
 
 @pytest.mark.skipif(not REDIS_LIVE, reason="requires a reachable Redis service")
 def test_hit_limit_sets_ttl_in_same_transaction():
+    # Models Redis losing a process between writes; the transaction must leave a TTL on every counter key.
     rds.flushdb()
     key = limiter_key("test", "ttl-check")
     hit_limit(key, window=60)
@@ -51,6 +53,7 @@ def test_hit_limit_sets_ttl_in_same_transaction():
 
 
 def test_limiter_key_does_not_include_plain_email_or_ip():
+    # Models the observable Redis key surface; account identifiers must not be recoverable from key names.
     key = limiter_key("login-fail:acct", "person@example.com:203.0.113.10")
     assert "person@example.com" not in key
     assert "203.0.113.10" not in key

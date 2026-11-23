@@ -57,6 +57,7 @@ def _post_order(client, token, supplier, warehouse, product, key):
 
 
 def test_concurrent_purchase_orders_on_postgres():
+    # Models two independent clients submitting at the same time; PostgreSQL row/unique constraints arbitrate commits.
     client, token, supplier, warehouse, product = _setup()
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(
@@ -70,6 +71,7 @@ def test_concurrent_purchase_orders_on_postgres():
 
 
 def test_concurrent_inventory_adjustments_preserve_postgres_row_locking():
+    # Models simultaneous warehouse movements; SELECT FOR UPDATE must serialize the shared inventory balance.
     client, token, supplier, warehouse, product = _setup()
     headers = {"Authorization": f"Bearer {token}"}
     seed = client.post(
@@ -99,6 +101,7 @@ def test_concurrent_inventory_adjustments_preserve_postgres_row_locking():
 
 
 def test_concurrent_same_idempotency_key_has_one_committed_order():
+    # Models a client retry racing its original request; one idempotency record must represent one order.
     client, token, supplier, warehouse, product = _setup()
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(
@@ -114,6 +117,7 @@ def test_concurrent_same_idempotency_key_has_one_committed_order():
 
 
 def test_concurrent_refresh_of_same_token_has_one_success_and_one_reuse_detection():
+    # Models two concurrent refresh requests using one bearer credential; the database lock enforces single use.
     client, _, _, _, _ = _setup()
     login = client.post("/auth/login", json={"email": "concurrency@example.com", "password": "Madar!Secure2026"})
     assert login.status_code == 200, login.text
