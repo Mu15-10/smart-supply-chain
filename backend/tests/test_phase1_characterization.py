@@ -1,3 +1,5 @@
+"""Characterize the public API through an in-process ASGI client and test database."""
+
 import uuid
 
 import pytest

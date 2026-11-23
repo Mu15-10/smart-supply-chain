@@ -1,92 +1,114 @@
-# تقرير المرحلة 1-ب — مراجعة refresh/logout وproxy وRedis
+# تقرير المرحلة 1-ب — إصلاح trusted proxy وrefresh family
 
 ## الحالة
 
-بدأت الوحدة 1-ب بعد موافقة المستخدم الكتابية. ركزت هذه الوحدة على مراجعة أمنية محدودة قبل أي تقسيم لـ`main.py`، مع الحفاظ على أشكال استجابات API الحالية.
+تم فتح إصلاح 1-ب بناءً على مراجعة المدير. الوحدة لا تزال قبل أي تقسيم لـ`main.py`، ولم يبدأ 1-ج.
 
-## نطاق المراجعة
+المراجعة صححت نتيجة الوحدة السابقة: التغيير في `e07a31d` لم يكن off-by-one سليماً؛ بل كان تغييراً خاطئاً أعاد ثغرة تزوير العنوان لأن الاختبار افترض أن عنوان الـproxy يظهر داخل XFF، وهو ليس النموذج المعتاد عندما يضيف الـproxy عنوان peer إلى نهاية القائمة.
 
-- refresh-token rotation وreuse detection.
-- logout وإبطال access/refresh tokens.
-- rate limiting الخاص بـrefresh.
-- fail-closed behavior عند تعطل Redis في production.
-- استخراج عنوان العميل مع `TRUSTED_PROXY_COUNT` و`X-Forwarded-For`.
-- CORS وsecurity headers ذات الصلة.
-- تزامن refresh لنفس الرمز على PostgreSQL.
+## ما تم تنفيذه
 
-## ما اكتُشف وأُصلح
+### trusted proxy وX-Forwarded-For
 
-### 1. refresh limiter كان يستخدم IP صريحاً وحدوداً hard-coded
+- استبدال `TRUSTED_PROXY_COUNT` بـ`TRUSTED_PROXY_CIDRS`.
+- وجود `TRUSTED_PROXY_COUNT` في البيئة أو مدخلات `Settings` يفشل الإقلاع برسالة واضحة.
+- إذا كان socket peer خارج CIDRs الموثوقة، يتم تجاهل XFF بالكامل.
+- يتم جمع كل أسطر XFF بالترتيب في قائمة واحدة.
+- يتم اختيار أول عنوان غير موثوق من اليمين بعد تخطي عناوين الشبكات الموثوقة.
+- تم وضع حد أقصى 64 عنصراً و8192 بايتاً للـXFF؛ التجاوز يعود إلى socket peer.
+- العناوين غير الصالحة أو التي تحتوي ports أو tokens مثل `unknown` و`_hidden` تعود إلى socket peer.
+- IPv4-mapped IPv6 تطبع كـIPv4.
+- مفاتيح rate limit تستخدم IPv4 الكامل أو شبكة `/64` لعناوين IPv6.
+- أضيفت `client_ip_fallback_total{reason}` مع الأسباب: `peer_not_trusted`, `no_xff`, `invalid_entry`, `too_many_entries`, `all_trusted`، مع عدم تسجيل العناوين الخام.
+- أضيف endpoint metrics داخلي غير ظاهر في OpenAPI لقراءة العداد.
+- production مع CIDRs فارغة يصدر تحذيراً واضحاً؛ ويظل قفل الأصل عبر الشبكة شرط Go-Live.
 
-كان مفتاح Redis هو `refresh:{ip}` وكانت القيم `30` و`60` مكتوبة داخل endpoint. تم تغييره إلى `limiter_key("refresh", ip)`، الذي يستخدم HMAC، مع قراءة `refresh_max_per_ip` و`refresh_window_seconds` من `Settings`.
+تم توثيق أساس القرار والمصادر في [ADR-001-trusted-proxy-cidrs.md](adr/ADR-001-trusted-proxy-cidrs.md)، بما في ذلك الاقتباس الحرفي الذي تمت قراءته من توثيق nginx الرسمي.
 
-الفائدة: عدم تسريب عنوان IP في مفتاح Redis، وتوحيد الإعدادات القابلة للضبط مع بقية rate limits.
+### logout وrefresh family
 
-### 2. خطأ off-by-one في trusted proxy parsing
+- logout يلغي كل refresh tokens في family الخاصة بالرمز المرسل، وليس الرمز الحالي فقط.
+- deny-list الخاص بـaccess-token `jti` بقي موجوداً.
+- logout برمز refresh غير معروف يعيد الاستجابة العامة نفسها ولا يكشف وجود الرمز.
+- reuse عبر عدة أجيال يلغي بقية العائلة ويسجل حدث outbox باسم `security.refresh_token_reuse_detected` دون تسجيل token خام.
 
-كان التطبيق يختار عنوان proxy بدلاً من أول عنوان غير موثوق في بعض سلاسل `X-Forwarded-For`. تم تصحيح الحساب ليختار العنوان الصحيح وفق عدد الـproxies الموثوقة، مع fallback إلى عنوان اتصال العميل عند غياب قيمة صالحة.
+## الاختبارات
 
-الفائدة: منع بناء rate limits وقرارات التدقيق على عنوان proxy بدلاً من عنوان العميل الحقيقي.
+تم استبدال نموذج proxy غير الواقعي باختبارات تمثل proxy يضيف عنوان العميل إلى نهاية XFF، وتشمل:
 
-### 3. اختبارات fail-closed
+- proxy واحد، مع prefix مزيف يرسله المهاجم.
+- proxyان وثلاثة مع suffix موثوق.
+- IPv4 وIPv6 وIPv4-mapped IPv6.
+- كل أسطر XFF في طلب واحد وبترتيب wire order.
+- values تالفة، ports، `unknown`، `_hidden`، المسافات، الفواصل، والسقف 64/8192.
+- socket peer خارج CIDR، وsocket peer مفقود، وXFF فارغ، وسلسلة كلها trusted.
+- تدوير prefix مزيف لا يتجاوز حدود login أو registration أو refresh.
+- logout يلغي ثلاثة أجيال.
+- reuse بعد ثلاثة أجيال يلغي العائلة ويسجل event.
+- Redis fail-closed في production.
 
-أضيفت اختبارات تثبت أن Redis عند تعطلِه في production يسبب `503 AUTH_TEMPORARILY_UNAVAILABLE` بدلاً من السماح بتجاوز ضوابط المصادقة أو rate limiting.
+كل اختبار يحاكي سلوكاً خارجياً يضع تعليقاً يشرح النموذج. الأساس الخارجي المستخدم هو MDN وCloudflare وnginx كما هو موثق في ADR؛ لم تُفترض ranges لمنصة استضافة بعينها.
 
-## التغييرات والـcommits
+## الـcommits
 
 | التغيير | commit | النتيجة |
 |---|---|---|
-| اختبارات characterization للأمان والتزامن | `c3e0df6` | اختبارات refresh limits، proxy parsing، CORS، logout، وتزامن refresh على PostgreSQL. |
-| إصلاح refresh limits وtrusted proxy parsing | `e07a31d` | إزالة IP الصريح والحدود hard-coded وتصحيح اختيار عنوان العميل. |
-| اختبارات Redis fail-closed | `c46b7d8` | تغطية صريحة لفشل Redis في production. |
+| إصلاح CIDR parser وrate-limit normalization وrefresh family | `a188b78` | إزالة count، إضافة CIDR، السقف والتطبيع والmetric، وإلغاء family في logout وتسجيل reuse. |
+| اختبارات الإصلاح ومراجعة نماذج الاختبار | `1f6f60e` | اختبارات XFF الواقعية، integration limits، logout family، reuse متعدد الأجيال، وتعليقات النمذجة. |
+| تحسين CI | `6138068` | timeout وconcurrency وRedis health وpip-audit منفصل وSemgrep مستقل. |
 
-## الأدلة الفعلية
+## الأدلة المحلية الفعلية
 
-تم التشغيل باستخدام:
+تم التشغيل على PostgreSQL 16 وRedis الحقيقيين:
 
 ```text
 TEST_DATABASE_URL=postgresql+psycopg://supply_ci:supply_ci@127.0.0.1:5432/supply_ci
 REDIS_URL=redis://127.0.0.1:6379/15
 ```
 
-والنتائج:
+النتائج:
 
-- `pytest -s -q -rs`: **40 passed, 1 warning**.
-- ظهر في بداية التشغيل: `[test-bootstrap] database dialect: postgresql`.
-- اختبارات التزامن وحدها: **4 passed, 1 warning**.
-- اختبارات 1-ب الأمنية وحدها: **7 passed, 1 warning**.
+- `[test-bootstrap] database dialect: postgresql`.
+- `pytest -s -q -rs`: **49 passed, 1 warning**.
+- اختبارات 1-ب وPostgreSQL concurrency: **19 passed, 1 warning**.
 - `ruff check backend`: **All checks passed**.
 - `ruff format --check backend`: **18 files already formatted**.
 - `mypy backend/app --ignore-missing-imports`: **Success: no issues found in 3 source files**.
 - `git diff --check`: passed.
+- Semgrep لم يكن مثبتاً محلياً؛ سيُتحقق منه في job CI مستقل باستخدام `--metrics=off`، ولا يُدّعى نجاحه محلياً.
 
-## تحقق GitHub Actions
+## تغييرات CI
 
-تم تشغيل CI بعد دفع commits الوحدة، وكانت النتيجة **success**:
+أضيفت:
 
-- التشغيل: [Foundation CI #45200819973](https://github.com/Mu15-10/smart-supply-chain/actions/runs/45200819973)
-- commit: `382b2c5`.
-- `backend`: **success**.
-- `frontend`: **success**.
-- `container`: **success**.
-- `secrets`/gitleaks: **success**.
+- `timeout-minutes` لكل job.
+- `concurrency` مع إلغاء التشغيل الأقدم لنفس المرجع.
+- Redis health check صريح عبر `redis-cli ping`.
+- job مستقل لـ`pip-audit`.
+- job مستقل لـSemgrep مع `--metrics=off`.
+- لم تتغير أي action SHA.
 
-## ما لم يُنفذ
+## ما لم يُتحقق منه بعد
 
-- لم يبدأ تقسيم `main.py` إلى modules.
-- لم تُنفذ مراجعة Semgrep مستقلة.
-- لم تُنفذ load testing أو backup/restore أو production managed database.
-- لم تُجرَ مراجعة قانونية أو إعداد monitoring production.
+- لم يُدفع إصلاح 1-ب إلى GitHub بعد هذه التغييرات، لذلك لا يوجد بعد رابط CI أخضر على commit الإصلاح.
+- لم يُنفذ Semgrep محلياً لأن CLI غير مثبت.
+- لم تُختبر آلية origin lockdown من خارج شبكة النشر؛ هذا شرط المرحلة 9.
+- لم يُتخذ قرار استضافة. قبل Render/Railway/أي منصة، يجب قراءة توثيقها الرسمي عن socket peer والheaders وتحديث ADR؛ إن لم يكن موثقاً يسجل كمخاطرة.
+- لم يُنفذ ADR مستقل لتقييم `CF-Connecting-IP`؛ مؤجل إلى المرحلة 9 عند النشر خلف Cloudflare.
+- لم تُنفذ load testing أو backup/restore أو managed PostgreSQL أو monitoring production.
 
-## المخاطر المفتوحة
+## درس مستفاد
 
-- logout يبطل refresh token المرسل فقط، بينما إبطال كل family/session عند logout قرار تشغيلي وأمني يحتاج موافقة قبل تغييره لأنه قد يغير سلوك المستخدمين.
-- semantics الخاصة بإبطال family بعد reuse تحتاج اختباراً أوسع عبر عدة أجيال من rotation.
-- `X-Forwarded-For` يظل معتمداً على صحة إعداد `TRUSTED_PROXY_COUNT` في topology الإنتاج؛ القيمة الخاطئة قد تؤثر في rate limiting والتدقيق.
-- سياسة CORS الإنتاجية تعتمد على قائمة origins صريحة، ويجب مراجعة القائمة الفعلية قبل Go-Live.
+اختبار الأمان يجب أن يمثل سلوك العالم الحقيقي، لا الشكل الذي نتمنى أن تكون عليه البيانات. اختبار XFF السابق أدخل عنوان proxy داخل القائمة، بينما proxy الشائع يضيف عنوان peer إلى النهاية؛ لذلك بدا الإصلاح صحيحاً داخل الاختبار لكنه أعاد مساراً يسمح للمهاجم بتدوير prefix مزيف. منذ هذه الوحدة، كل اختبار proxy يحدد socket peer وسلوك الإضافة ومصدر الافتراض، وأي سلوك غير موثق يذكر كمخاطرة بدلاً من اعتباره حقيقة.
 
-## قرار الوحدة التالية
+## المخاطر وقائمة Go-Live
 
-بعد دفع هذه الوحدة والتحقق من CI، الوحدة التالية المقترحة هي **1-ج**: مراجعة عزل المستأجرين والصلاحيات على جميع مسارات CRUD، مع اختبارات تمنع cross-tenant access وتثبت أن أي استخراج لاحق من `main.py` لا يغير حدود العزل.
+- يجب قفل origin على مستوى الشبكة حتى لا يتصل به الإنترنت مباشرة مع XFF مزيف.
+- يجب تزويد `TRUSTED_PROXY_CIDRS` من إعداد النشر وتحديثها من المصدر الرسمي للبنية التحتية.
+- production مع CIDRs فارغة يحتاج قراراً تشغيلياً صريحاً قبل Go-Live.
+- عند Cloudflare نحتاج ADR مستقلاً لتقييم `CF-Connecting-IP` والتحقق من Authenticated Origin Pulls أو Tunnel.
+- logout family يغير سلوك الجلسات المقصود لصالح الإبطال الكامل؛ يجب مراجعة هذا في product acceptance.
 
-لا يبدأ تقسيم `main.py` إلا بعد إغلاق مراجعات المرحلة 1 وموافقة المستخدم الكتابية على ترتيب الاستخراج.
+## الخطوة التالية
+
+بعد دفع هذه التغييرات ونجاح CI على commit الإصلاح، يمكن إعداد 1-ج لعزل tenants والصلاحيات. لا يبدأ 1-ج ولا تقسيم `main.py` قبل رابط CI الأخضر وموافقة المدير الكتابية التالية.
