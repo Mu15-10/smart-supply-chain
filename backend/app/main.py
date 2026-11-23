@@ -706,7 +706,10 @@ def create_invitation(x: InvitationIn, c=Depends(require_roles("admin"))):
         if settings.return_invitation_token:
             result["token"] = raw
         return Response(
-            content=json.dumps({"data": result}), media_type="application/json", headers={"Cache-Control": "no-store"}
+            content=json.dumps({"data": result}),
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+            status_code=201,
         )
 
 
@@ -1026,7 +1029,7 @@ def transition_po(po_id, target, roles, c, key=None):
         }
         if po.status not in allowed[target]:
             raise HTTPException(409, "INVALID_PURCHASE_ORDER_TRANSITION")
-        po.status = allowed[target]
+        po.status = allowed[target][po.status]
         if target == "approve":
             for line in db.scalars(select(POLine).where(POLine.purchase_order_id == po.id)):
                 inv = db.scalar(
