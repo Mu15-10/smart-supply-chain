@@ -25,6 +25,7 @@
 | إصلاح انتقال حالة أمر الشراء | `40f7d36` | كان الكود يعيّن قاموس الانتقالات كاملاً إلى `po.status`، ما يفشل على PostgreSQL. أصبح يعيّن الحالة المستهدفة الصحيحة. |
 | إصلاح status code لإنشاء الدعوة | `40f7d36` | المسار معلن `201` لكنه كان يعيد `200` بسبب Response مخصص؛ أصبح يعيد `201` صراحةً. |
 | characterization tests للمسارات الحالية | `fd420ac` | أضيفت اختبارات المصادقة، refresh/logout، invitations، role boundaries، CRUD/list، inventory، purchase-order transitions، idempotency، والـ health/security headers. |
+| إصلاح فحص gitleaks في CI | `fbac3f6` | أضيف `fetch-depth: 0` إلى checkout الخاص بـ`secrets` حتى يتوفر نطاق Git الكامل؛ لا يوجد leak جديد. |
 
 ## الأدلة الفعلية
 
@@ -36,13 +37,25 @@
 - ظهر صراحةً أثناء التشغيل: `[test-bootstrap] database dialect: postgresql`.
 - `git diff --check`: passed.
 
+## تحقق GitHub Actions
+
+تم تشغيل workflow المنشور بعد إصلاح shallow checkout، والنتيجة **success**:
+
+- التشغيل: [Foundation CI #45196301267](https://github.com/Mu15-10/smart-supply-chain/actions/runs/45196301267)
+- commit الذي شُغّل عليه: `fbac3f6` (`ci: fetch full history for gitleaks`)
+- `secrets`/gitleaks: **passed**؛ فحص كامل للتاريخ ولم يسجل أسراراً.
+- `backend`: **passed**؛ PostgreSQL 16 وRedis 7، ruff، format، mypy، pytest، pip-audit، وmigration round-trip/check.
+- `frontend`: **passed**؛ npm audit وbuild.
+- `container`: **passed**؛ Docker build وTrivy.
+- ظهرت تحذيرات GitHub غير مانعة عن Node.js 20 في بعض actions؛ لم تفشل أي بوابة.
+
 ## ما لم يُنفذ
 
 - لم يبدأ تقسيم `main.py` إلى modules.
 - لم تُنفذ مراجعة Semgrep.
 - لم تُتخذ قرارات جديدة حول حذف MongoDB أو تغيير response/API contracts.
 - لم تُنفذ اختبارات load أو backup/restore أو production managed database.
-- لم يُشغّل GitHub CI بعد commits المرحلة 1-أ؛ سيتم تشغيله بعد دفع هذه commits.
+- لم يُشغّل CI على commit التقرير الحالي نفسه؛ التشغيل الأخضر الموثق أعلاه كان على commit `fbac3f6`، بينما commit التقرير لا يغيّر كود التطبيق.
 
 ## المخاطر المفتوحة
 
