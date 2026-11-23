@@ -329,14 +329,21 @@ def get_client_ip(request: Request) -> str:
     if len(raw_values) > MAX_XFF_ENTRIES:
         _record_client_ip_fallback("too_many_entries")
         return fallback
-    try:
-        values = [_normalized_ip(value) for value in raw_values]
-    except ValueError:
-        _record_client_ip_fallback("invalid_entry")
+    saw_trusted = False
+    for raw_value in reversed(raw_values):
+        try:
+            address = _normalized_ip(raw_value)
+        except ValueError:
+            _record_client_ip_fallback("invalid_entry")
+            return fallback
+        if _trusted_proxy(address):
+            saw_trusted = True
+            continue
+        # Once selected, values to the left are attacker-controlled prefix data.
+        return str(address)
+    if saw_trusted:
+        _record_client_ip_fallback("all_trusted")
         return fallback
-    for address in reversed(values):
-        if not _trusted_proxy(address):
-            return str(address)
     _record_client_ip_fallback("all_trusted")
     return fallback
 

@@ -91,6 +91,15 @@ def test_one_proxy_ignores_attacker_prefix_and_uses_appended_client(monkeypatch:
     assert main.get_client_ip(request) == "198.51.100.8"
 
 
+def test_invalid_left_prefix_is_not_analyzed_after_client_is_selected(monkeypatch: pytest.MonkeyPatch):
+    # Models a proxy-appended suffix: only the trusted suffix and selected client are parsed;
+    # the attacker-controlled prefix is not analyzed. Source: ADR-001/MDN XFF model.
+    _set_trusted_proxy(monkeypatch, "10.0.0.0/24")
+    request = _request([("X-Forwarded-For", "garbage!!, 198.51.100.8, 10.0.0.10")], client_host="10.0.0.10")
+
+    assert main.get_client_ip(request) == "198.51.100.8"
+
+
 def test_two_and_three_proxies_skip_trusted_suffix(monkeypatch: pytest.MonkeyPatch):
     # Models a chain where each proxy appends its peer; trusted proxy addresses form the right suffix.
     _set_trusted_proxy(monkeypatch, "10.0.0.0/24", "192.0.2.0/24")
