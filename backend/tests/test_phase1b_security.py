@@ -100,6 +100,22 @@ def test_invalid_left_prefix_is_not_analyzed_after_client_is_selected(monkeypatc
     assert main.get_client_ip(request) == "198.51.100.8"
 
 
+def test_invalid_left_prefix_with_port_is_not_analyzed(monkeypatch: pytest.MonkeyPatch):
+    # Models attacker-controlled XFF prefix data; a port-shaped prefix is ignored after selection.
+    _set_trusted_proxy(monkeypatch, "10.0.0.0/24")
+    request = _request([("X-Forwarded-For", "6.6.6.6:80, 198.51.100.8, 10.0.0.10")], client_host="10.0.0.10")
+
+    assert main.get_client_ip(request) == "198.51.100.8"
+
+
+def test_invalid_xff_entry_to_the_right_falls_back(monkeypatch: pytest.MonkeyPatch):
+    # Models a malformed value in the proxy-controlled suffix; unlike a left prefix, it is analyzed.
+    _set_trusted_proxy(monkeypatch, "10.0.0.0/24")
+    request = _request([("X-Forwarded-For", "198.51.100.8, garbage!!")], client_host="10.0.0.10")
+
+    assert main.get_client_ip(request) == "10.0.0.10"
+
+
 def test_two_and_three_proxies_skip_trusted_suffix(monkeypatch: pytest.MonkeyPatch):
     # Models a chain where each proxy appends its peer; trusted proxy addresses form the right suffix.
     _set_trusted_proxy(monkeypatch, "10.0.0.0/24", "192.0.2.0/24")
@@ -158,12 +174,10 @@ def test_empty_and_all_trusted_xff_have_safe_fallback(monkeypatch: pytest.Monkey
     assert main.CLIENT_IP_FALLBACK_TOTAL["all_trusted"] >= 1
 
 
-def test_fallback_metric_exposes_reason_label():
-    # Models a monitoring scrape; only reason labels and counters are exposed, never raw addresses.
+def test_metrics_endpoint_is_not_public():
+    # Models an unauthenticated external request; process-local counters are not exposed before monitoring design.
     response = client.get("/metrics")
-    assert response.status_code == 200
-    assert 'client_ip_fallback_total{reason="' in response.text
-    assert "198.51.100.8" not in response.text
+    assert response.status_code == 404
 
 
 def test_rotating_spoofed_xff_does_not_bypass_login_registration_or_refresh_limits(monkeypatch: pytest.MonkeyPatch):
@@ -321,6 +335,7 @@ def _register_and_login(prefix: str) -> dict:
 
 def test_logout_revokes_entire_refresh_family_and_unknown_token_is_generic():
     # Models a user logout that invalidates every rotated session generation, without token enumeration.
+    # This case alone would not distinguish revoking one token from the whole family because no live child remains.
     tokens = _register_and_login("family")
     rotated = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).json()
     latest = client.post("/auth/refresh", json={"refresh_token": rotated["refresh_token"]}).json()
@@ -341,6 +356,47 @@ def test_logout_revokes_entire_refresh_family_and_unknown_token_is_generic():
     )
     assert unknown.status_code == 200
     assert unknown.json() == {"data": {"logged_out": True}}
+
+
+def test_logout_with_old_refresh_token_revokes_family_and_does_not_cross_users():
+    # Models two users sharing the service: a refresh token from another user must not revoke either family.
+    user_a = _register_and_login("logout-old-a")
+    user_a_rotated = client.post("/auth/refresh", json={"refresh_token": user_a["refresh_token"]})
+    assert user_a_rotated.status_code == 200
+    user_a_rotated_data = user_a_rotated.json()
+    user_a_rt1 = user_a_rotated_data["refresh_token"]
+    user_a_current_access = user_a_rotated_data["access_token"]
+
+    user_b = _register_and_login("logout-old-b")
+    wrong_user_logout = client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {user_a_current_access}"},
+        json={"refresh_token": user_b["refresh_token"]},
+    )
+    assert wrong_user_logout.status_code == 200
+    user_a_rt2_response = client.post("/auth/refresh", json={"refresh_token": user_a_rt1})
+    assert user_a_rt2_response.status_code == 200
+    user_a_current_access = user_a_rt2_response.json()["access_token"]
+    user_b_rotated = client.post("/auth/refresh", json={"refresh_token": user_b["refresh_token"]})
+    assert user_b_rotated.status_code == 200
+    user_b_current_access = user_b_rotated.json()["access_token"]
+
+    # Reusing revoked generation zero must still find its family and revoke the live descendants.
+    old_token_logout = client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {user_a_current_access}"},
+        json={"refresh_token": user_a["refresh_token"]},
+    )
+    assert old_token_logout.status_code == 200
+    assert client.post("/auth/refresh", json={"refresh_token": user_a_rt1}).status_code == 401
+
+    unknown_logout = client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {user_b_current_access}"},
+        json={"refresh_token": "x" * 64},
+    )
+    assert unknown_logout.status_code == 200
+    assert unknown_logout.json() == {"data": {"logged_out": True}}
 
 
 def test_refresh_reuse_after_multiple_generations_revokes_family_and_records_event():

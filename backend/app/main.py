@@ -286,7 +286,8 @@ def emit(db, tenant_id, event_type, aggregate_id, payload):
 
 def _record_client_ip_fallback(reason: str) -> None:
     CLIENT_IP_FALLBACK_TOTAL[reason] += 1
-    logger.warning("client_ip_fallback_total{reason=%s}", reason)
+    # Counters remain per-process until the Prometheus multiprocess design is added.
+    logger.debug("client_ip_fallback_total{reason=%s}", reason)
 
 
 def _normalized_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
@@ -605,15 +606,6 @@ def health():
     return {"status": "ok", "service": SERVICE, "environment": ENVIRONMENT}
 
 
-@app.get("/metrics", include_in_schema=False)
-def metrics():
-    lines = [
-        f'client_ip_fallback_total{{reason="{reason}"}} {CLIENT_IP_FALLBACK_TOTAL[reason]}'
-        for reason in sorted(CLIENT_IP_FALLBACK_TOTAL)
-    ]
-    return Response("\n".join(lines) + ("\n" if lines else ""), media_type="text/plain; version=0.0.4")
-
-
 @app.post("/auth/register", status_code=201)
 def register(request: Request, x: Register):
     if not ALLOW_PUBLIC_REGISTRATION:
@@ -767,7 +759,7 @@ def logout(x: RefreshIn, authorization: str | None = Header(None)):
         row = db.scalar(
             select(RefreshToken).where(RefreshToken.token_hash == token_hash, RefreshToken.user_id == claims["sub"])
         )
-        if row and not row.revoked_at:
+        if row:
             db.query(RefreshToken).filter(
                 RefreshToken.family_id == row.family_id,
                 RefreshToken.user_id == claims["sub"],
