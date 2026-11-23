@@ -14,6 +14,7 @@ Phase 0 was executed on `hardening/phase-0`, based on `origin/security/hardening
 | CI gates | local backup commit `321583b`; workflow file excluded from published branch | GitHub rejected workflow update due App permission | Blocked for publication |
 | Baseline and health tests | `dd41dd3`; tests and `docs/performance.md` | Original baseline: `pytest -q backend`: 5 passed, 1 skipped; frontend `npm run build` passed | Local smoke/build baseline done |
 | Phase 0-B security fixes | `7d8f279`; settings, limiter and security tests | Latest local `pytest -q backend`: 7 passed, 3 skipped | Redis-backed tests remain pending on CI |
+| Phase 0-C test infrastructure and quality gates | pending commit; `tests/conftest.py`, Alembic URL precedence, Ruff/mypy config, PostgreSQL concurrency tests | PostgreSQL 16 + Redis 7 local CI sequence: `13 passed, 1 warning`; Ruff and mypy passed | Local gate passed; GitHub CI publication still pending |
 
 All commit IDs in this table were checked with `git cat-file -t` and resolve to commit objects. The
 earlier IDs from the pre-rewrite local history are intentionally not used as evidence for the
@@ -43,6 +44,21 @@ next security review gate and must not be treated as Phase 0 evidence.
 - `dashboard/public/manus-routes.json` and its TODO reference were removed in separate commit
   `ee68219`.
 
+## What was discovered in the review
+
+The manager review exposed that the previous test suite forced
+`DATABASE_URL=sqlite:///./test-mvp.db` inside `tests/test_api.py`, while Alembic also preferred
+the process environment over the URL supplied by migration tests. As a result, the API tests did
+not exercise PostgreSQL, and the migration test could see tables created outside Alembic and fail
+with `table tenants already exists`. A green result from that setup could not prove PostgreSQL
+compatibility, and the prior CI evidence did not establish it.
+
+Phase 0-C removes the test-level environment override, centralizes bootstrap in
+`backend/tests/conftest.py`, builds the schema through Alembic, isolates rows between tests, and
+gives programmatic Alembic URLs priority through `Config.attributes`. The session prints the
+actual dialect; PostgreSQL-only concurrency tests cover two purchase orders, two inventory
+adjustments against the same row, and the same idempotency key.
+
 ## Commands actually run
 
 - Original Phase 0 run: `pytest -q backend`: **5 passed, 1 skipped**. The skipped test required `TEST_DATABASE_URL`.
@@ -53,13 +69,23 @@ next security review gate and must not be treated as Phase 0 evidence.
 - `npm ci --prefix dashboard`: passed.
 - `npm run build --prefix dashboard`: passed. Vite reported JS gzip `80.83 kB` and CSS gzip `6.21 kB`.
 - `git diff --check`: passed.
+- Phase 0-C local CI sequence with PostgreSQL 16 and Redis:
+  - `ruff check backend`: **All checks passed**.
+  - `ruff format --check backend`: **16 files already formatted**.
+  - `mypy backend/app --ignore-missing-imports`: **Success: no issues found in 3 source files**.
+  - `alembic upgrade head && downgrade base && upgrade head && alembic check`: PostgreSQL
+    `PostgresqlImpl`; **No new upgrade operations detected**.
+  - `pytest -s -q backend -rs`: **[test-bootstrap] database dialect: postgresql; 13 passed, 1 warning**.
 - Docker-dependent commands: not run because `docker` is not installed in the execution environment.
 
 ## Not implemented or not verified
 
 - Full behavior-preserving extraction of `main.py` into all target modules is not complete. The current API remains compatible and the target structure is documented, but the refactor is deliberately left open rather than claimed complete.
-- PostgreSQL/Redis integration and concurrency tests were not executed locally because Docker is unavailable. CI configuration exists only in the local backup branch `hardening/phase-0-with-ci`; GitHub rejected its publication due missing `workflows` permission.
-- `ruff`, `mypy`, `pip-audit`, Semgrep, gitleaks and Trivy were not available locally; CI invokes them.
+- GitHub CI has not been run from the repository because the current GitHub App cannot publish
+  `.github/workflows/ci.yml`; no GitHub green-run URL exists yet. The local service-backed
+  PostgreSQL/Redis sequence is evidence for this checkout only, not a substitute for GitHub CI.
+- `pip-audit`, Semgrep, gitleaks and Trivy were not run locally; their CI execution remains
+  unverified. Ruff and mypy were installed and run successfully in this environment.
 - Backend lockfile with hashes and Docker image digest pinning remain open; no unverified versions or digests were added.
 - Full structured JSON logging and a complete architectural import-boundary test remain open.
 - `dashboard/public/manus-routes.json` deletion is tracked as a separate Phase 0-B commit because the only repository reference found was the dashboard TODO entry.
@@ -70,4 +96,7 @@ The current single-file backend remains harder to maintain than the target modul
 
 ## Next gate
 
-Phase 0 is **not presented as fully complete** until PostgreSQL/Redis CI passes and the modular extraction decision is either completed with evidence or explicitly accepted as a separate foundation sub-phase. No phase 1 work should begin before written approval of this report and the remaining blockers.
+Phase 0 is **not presented as fully complete** until the repository owner publishes the corrected
+workflow, provides a green GitHub CI run on PostgreSQL/Redis, and explicitly accepts the remaining
+foundation risks. No phase 1 work or `main.py` extraction should begin before written approval of
+this report and the CI gate.
