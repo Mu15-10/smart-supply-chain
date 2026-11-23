@@ -111,3 +111,20 @@ def test_concurrent_same_idempotency_key_has_one_committed_order():
     assert len({response.json()["data"]["id"] for response in responses}) == 1
     orders = client.get("/purchase-orders", headers={"Authorization": f"Bearer {token}"}).json()["data"]
     assert len(orders) == 1
+
+
+def test_concurrent_refresh_of_same_token_has_one_success_and_one_reuse_detection():
+    client, _, _, _, _ = _setup()
+    login = client.post("/auth/login", json={"email": "concurrency@example.com", "password": "Madar!Secure2026"})
+    assert login.status_code == 200, login.text
+    refresh_token = login.json()["refresh_token"]
+
+    def rotate(_):
+        return client.post("/auth/refresh", json={"refresh_token": refresh_token})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(rotate, [1, 2]))
+
+    assert sorted(response.status_code for response in responses) == [200, 401]
+    failed = next(response for response in responses if response.status_code == 401)
+    assert failed.json()["detail"] == "REFRESH_TOKEN_REUSE_DETECTED"
