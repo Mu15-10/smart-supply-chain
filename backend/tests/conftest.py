@@ -24,7 +24,7 @@ TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{LOCAL_DA
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("SERVICE", "all")
 os.environ.setdefault("ENVIRONMENT", "test")
-os.environ.setdefault("JWT_SECRET", "test-secret-with-at-least-32-characters-long")
+os.environ.setdefault("JWT_SECRET", "CHANGE_ME_TEST_JWT_SECRET_12345678901234567890")
 
 
 def _alembic_config(url: str) -> Config:

@@ -6,7 +6,7 @@ from redis.exceptions import RedisError
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test-security.db")
 os.environ.setdefault("ENVIRONMENT", "test")
-os.environ.setdefault("JWT_SECRET", "test-secret-with-at-least-32-characters-long")
+os.environ.setdefault("JWT_SECRET", "CHANGE_ME_TEST_JWT_SECRET_12345678901234567890")
 os.environ.setdefault("REGISTRATION_MAX_PER_IP", "5")
 
 from app.core.config import Settings  # noqa: E402
@@ -60,7 +60,7 @@ def test_limiter_key_does_not_include_plain_email_or_ip():
 def test_production_rejects_insecure_settings():
     settings = Settings(
         environment="production",
-        jwt_secret="test-secret-with-at-least-32-characters-long",
+        jwt_secret="CHANGE_ME_TEST_JWT_SECRET_12345678901234567890",
         allowed_origins="https://app.example.com",
         docs_enabled=True,
     )
@@ -69,7 +69,7 @@ def test_production_rejects_insecure_settings():
 
     insecure_origins = Settings(
         environment="production",
-        jwt_secret="test-secret-with-at-least-32-characters-long",
+        jwt_secret="CHANGE_ME_TEST_JWT_SECRET_12345678901234567890",
         allowed_origins="http://app.example.com",
         docs_enabled=False,
     )
