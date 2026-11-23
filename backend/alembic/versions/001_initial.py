@@ -3,8 +3,9 @@
 This migration intentionally mirrors the phase-0 model contract. Future schema changes
 must use new revisions; it does not call Base.metadata.create_all.
 """
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "001_initial"
 down_revision = None

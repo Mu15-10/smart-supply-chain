@@ -1,6 +1,7 @@
 import os
 
 import pytest
+from redis.exceptions import RedisError
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test-security.db")
@@ -9,15 +10,13 @@ os.environ.setdefault("JWT_SECRET", "test-secret-with-at-least-32-characters-lon
 os.environ.setdefault("REGISTRATION_MAX_PER_IP", "5")
 
 from app.core.config import Settings  # noqa: E402
-from app.main import Base, app, engine, hit_limit, limiter_key, rds  # noqa: E402
-
+from app.main import app, hit_limit, limiter_key, rds  # noqa: E402
 
 client = TestClient(app)
-Base.metadata.create_all(engine)
 
 try:
     REDIS_LIVE = rds is not None and bool(rds.ping())
-except Exception:
+except RedisError:
     REDIS_LIVE = False
 
 

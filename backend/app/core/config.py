@@ -41,7 +41,7 @@ class Settings(BaseSettings):
             raise ValueError("ENVIRONMENT must be development, test, staging, or production")
         return value
 
-    def model_post_init(self, __context) -> None:
+    def model_post_init(self, __context: object, /) -> None:
         if self.allow_public_registration is None:
             self.allow_public_registration = self.environment != "production"
         if self.return_invitation_token is None:

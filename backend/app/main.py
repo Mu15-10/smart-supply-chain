@@ -1,30 +1,30 @@
 import hashlib
 import hmac
 import ipaddress
-import logging
-import re
 import json
+import logging
 import os
+import re
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Literal
 
 import jwt
 import redis
+from redis.exceptions import RedisError
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from .core.config import get_settings
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from pymongo import MongoClient
-from sqlalchemy import (
-    DateTime, ForeignKey, Integer, JSON, Numeric, String, UniqueConstraint,
-    create_engine, select
-)
-from sqlalchemy.exc import IntegrityError
+from pymongo.errors import PyMongoError
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, create_engine, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+from .core.config import get_settings
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
@@ -64,7 +64,7 @@ class RefreshToken(Base):
     family_id: Mapped[str] = mapped_column(String(36), index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
 class Supplier(Base):
     __tablename__ = "suppliers"
@@ -102,7 +102,7 @@ class Inventory(Base):
     on_hand: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     reserved: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     on_order: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
@@ -118,7 +118,7 @@ class PurchaseOrder(Base):
     tax_total: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     total: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     created_by: Mapped[str] = mapped_column(String(36))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
 class POLine(Base):
     __tablename__ = "purchase_order_lines"
@@ -137,7 +137,7 @@ class Outbox(Base):
     event_type: Mapped[str] = mapped_column(String(120))
     aggregate_id: Mapped[str] = mapped_column(String(36))
     payload: Mapped[dict] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
@@ -149,7 +149,7 @@ class IdempotencyKey(Base):
     request_hash: Mapped[str] = mapped_column(String(64))
     response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="processing")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
 class Invitation(Base):
     __tablename__ = "user_invitations"
@@ -160,7 +160,7 @@ class Invitation(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 DUMMY_PASSWORD_HASH = pwd.hash(secrets.token_urlsafe(32))
@@ -173,11 +173,11 @@ REFRESH_TOKEN_DAYS = settings.refresh_token_days
 ALLOW_PUBLIC_REGISTRATION = settings.allow_public_registration
 try:
     rds = redis.from_url(settings.redis_url, decode_responses=True)
-except Exception:
+except (RedisError, ValueError, TypeError):
     rds = None
 try:
     mongo = MongoClient(settings.mongo_url, serverSelectionTimeoutMS=500).supply_events
-except Exception:
+except (PyMongoError, ValueError):
     mongo = None
 
 app = FastAPI(title=f"Madar Supply Control - {SERVICE} service", version="0.3.0", docs_url="/docs" if settings.docs_enabled else None, redoc_url="/redoc" if settings.docs_enabled else None, openapi_url="/openapi.json" if settings.docs_enabled else None)
@@ -216,8 +216,8 @@ def emit(db, tenant_id, event_type, aggregate_id, payload):
     db.add(Outbox(id=event_id, tenant_id=tenant_id, event_type=event_type, aggregate_id=aggregate_id, payload=payload))
     try:
         if mongo is not None:
-            mongo.events.insert_one({"_id": event_id, "tenantId": tenant_id, "type": event_type, "aggregateId": aggregate_id, "data": payload, "occurredAt": datetime.now(timezone.utc)})
-    except Exception:
+            mongo.events.insert_one({"_id": event_id, "tenantId": tenant_id, "type": event_type, "aggregateId": aggregate_id, "data": payload, "occurredAt": datetime.now(UTC)})
+    except (PyMongoError, OSError):
         logger.warning("Mongo event delivery failed; transactional outbox retained")
     return event_id
 
@@ -233,7 +233,7 @@ def redis_available():
     try:
         if not rds: raise RuntimeError("redis unavailable")
         rds.ping(); return True
-    except Exception:
+    except (RedisError, RuntimeError, OSError):
         if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
         logger.warning("Redis unavailable; development security controls are degraded")
         return False
@@ -249,7 +249,7 @@ def check_limit(key, limit):
         if int(rds.get(key) or 0) >= limit:
             raise HTTPException(429, "TOO_MANY_ATTEMPTS", headers={"Retry-After": str(max(1, int(rds.ttl(key))))})
     except HTTPException: raise
-    except Exception:
+    except (RedisError, OSError, ValueError, TypeError):
         if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
         logger.warning("Redis limiter read failed")
 
@@ -261,11 +261,11 @@ def hit_limit(key, window=LOGIN_WINDOW_SECONDS):
         pipe.incr(key)
         pipe.expire(key, window)
         pipe.execute()
-    except Exception:
+    except (RedisError, OSError, ValueError, TypeError):
         if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
         logger.warning("Redis limiter write failed")
 
-def auth(authorization: Optional[str] = Header(None)):
+def auth(authorization: str | None = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "UNAUTHENTICATED")
     try:
@@ -273,7 +273,7 @@ def auth(authorization: Optional[str] = Header(None)):
         if redis_available() and rds.get(f"jwt-deny:{claims['jti']}"): raise HTTPException(401, "UNAUTHENTICATED")
         return claims
     except HTTPException: raise
-    except Exception: raise HTTPException(401, "UNAUTHENTICATED")
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError): raise HTTPException(401, "UNAUTHENTICATED")
 
 def require_roles(*allowed_roles):
     def dependency(c=Depends(auth)):
@@ -398,11 +398,11 @@ def health_ready():
     try:
         with engine.connect() as connection: connection.exec_driver_sql("SELECT 1")
         checks["database"] = True
-    except Exception:
+    except SQLAlchemyError:
         logger.warning("Readiness database check failed")
     try:
         if rds: rds.ping(); checks["redis"] = True
-    except Exception:
+    except (RedisError, OSError):
         logger.warning("Readiness Redis check failed")
     if not all(checks.values()): raise HTTPException(503, {"status": "not_ready", "checks": checks})
     return {"status": "ready", "checks": checks}
@@ -448,8 +448,8 @@ def login(request: Request, x: Login):
             raise HTTPException(401, "INVALID_CREDENTIALS")
         if rds:
             try: rds.delete(acct_key)
-            except Exception: logger.warning("Redis account limiter cleanup failed")
-        now = datetime.now(timezone.utc)
+            except (RedisError, OSError): logger.warning("Redis account limiter cleanup failed")
+        now = datetime.now(UTC)
         jti = str(uuid.uuid4())
         token = jwt.encode({"sub": user.id, "tenant_id": user.tenant_id, "roles": user.roles, "jti": jti, "iss": "madar-auth", "aud": "madar-api", "exp": now + timedelta(minutes=ACCESS_TOKEN_MINUTES)}, JWT_SECRET, algorithm="HS256")
         raw_refresh = secrets.token_urlsafe(48)
@@ -464,10 +464,10 @@ def refresh(request: Request, x: RefreshIn):
     check_limit(refresh_key, 30)
     hit_limit(refresh_key, 60)
     token_hash = hashlib.sha256(x.refresh_token.encode()).hexdigest()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with Session(engine) as db:
         row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash).with_for_update())
-        if not row or row.expires_at.replace(tzinfo=timezone.utc) <= now:
+        if not row or row.expires_at.replace(tzinfo=UTC) <= now:
             raise HTTPException(401, "UNAUTHENTICATED")
         if row.revoked_at:
             db.query(RefreshToken).filter(RefreshToken.family_id == row.family_id, RefreshToken.revoked_at.is_(None)).update({"revoked_at": now})
@@ -483,26 +483,26 @@ def refresh(request: Request, x: RefreshIn):
         return {"access_token": access, "refresh_token": raw, "token_type": "bearer", "roles": user.roles}
 
 @app.post("/auth/logout")
-def logout(x: RefreshIn, authorization: Optional[str] = Header(None)):
+def logout(x: RefreshIn, authorization: str | None = Header(None)):
     claims = auth(authorization)
-    exp = int(claims["exp"]) - int(datetime.now(timezone.utc).timestamp())
+    exp = int(claims["exp"]) - int(datetime.now(UTC).timestamp())
     if rds and exp > 0:
         try: rds.setex(f"jwt-deny:{claims['jti']}", exp, "1")
-        except Exception:
+        except (RedisError, OSError):
             if ENVIRONMENT == "production": raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
             logger.warning("Redis logout deny-list write failed")
     token_hash = hashlib.sha256(x.refresh_token.encode()).hexdigest()
     with Session(engine) as db:
         row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash, RefreshToken.user_id == claims["sub"]))
         if row and not row.revoked_at:
-            row.revoked_at = datetime.now(timezone.utc); db.commit()
+            row.revoked_at = datetime.now(UTC); db.commit()
     return {"data": {"logged_out": True}}
 
 @app.post("/auth/invitations", status_code=201)
 def create_invitation(x: InvitationIn, c=Depends(require_roles("admin"))):
     raw = secrets.token_urlsafe(32)
     with Session(engine) as db:
-        invitation = Invitation(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], email=str(x.email).strip().lower(), role=x.role, token_hash=hashlib.sha256(raw.encode()).hexdigest(), expires_at=datetime.now(timezone.utc) + timedelta(hours=72))
+        invitation = Invitation(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], email=str(x.email).strip().lower(), role=x.role, token_hash=hashlib.sha256(raw.encode()).hexdigest(), expires_at=datetime.now(UTC) + timedelta(hours=72))
         db.add(invitation)
         db.commit()
         result = {"id": invitation.id, "email": invitation.email, "role": invitation.role, "expiresAt": invitation.expires_at.isoformat()}
@@ -514,7 +514,7 @@ def accept_invitation(x: AcceptInvitation):
     token_hash = hashlib.sha256(x.token.encode()).hexdigest()
     with Session(engine) as db:
         invite = db.scalar(select(Invitation).where(Invitation.token_hash == token_hash).with_for_update())
-        if not invite or invite.used_at or invite.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
+        if not invite or invite.used_at or invite.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC):
             raise HTTPException(400, "INVITATION_INVALID_OR_EXPIRED")
         if db.scalar(select(User).where(User.email == invite.email)):
             raise HTTPException(409, "REGISTRATION_FAILED")
@@ -522,7 +522,7 @@ def accept_invitation(x: AcceptInvitation):
             raise HTTPException(422, "PASSWORD_TOO_WEAK")
         user = User(id=str(uuid.uuid4()), tenant_id=invite.tenant_id, email=invite.email, display_name=x.display_name, password_hash=pwd.hash(x.password), roles=[invite.role])
         db.add(user)
-        invite.used_at = datetime.now(timezone.utc)
+        invite.used_at = datetime.now(UTC)
         db.commit()
         return {"data": {"id": user.id, "tenant_id": user.tenant_id, "email": user.email, "roles": user.roles}}
 
@@ -578,7 +578,7 @@ def warehouses(c=Depends(auth)):
         return {"data": [{"id": w.id, "code": w.code, "name": w.name} for w in db.scalars(select(Warehouse).where(Warehouse.tenant_id == c["tenant_id"]).order_by(Warehouse.code)).all()]}
 
 @app.get("/inventory")
-def inventory(warehouse_id: Optional[str] = None, product_id: Optional[str] = None, low_stock: bool = False, c=Depends(auth)):
+def inventory(warehouse_id: str | None = None, product_id: str | None = None, low_stock: bool = False, c=Depends(auth)):
     with Session(engine) as db:
         q = select(Inventory).where(Inventory.tenant_id == c["tenant_id"])
         if warehouse_id: q = q.where(Inventory.warehouse_id == warehouse_id)
@@ -592,7 +592,7 @@ def inventory(warehouse_id: Optional[str] = None, product_id: Optional[str] = No
         return {"data": rows}
 
 @app.post("/inventory/adjust", status_code=201)
-def adjust(x: AdjustIn, key: Optional[str] = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))):
+def adjust(x: AdjustIn, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))):
     if x.movement_type != "adjustment" and x.quantity <= 0:
         raise HTTPException(422, "QUANTITY_MUST_BE_POSITIVE")
     if x.movement_type == "adjustment" and x.quantity == 0:
@@ -625,7 +625,7 @@ def adjust(x: AdjustIn, key: Optional[str] = Header(None, alias="Idempotency-Key
         return out
 
 @app.post("/purchase-orders", status_code=201)
-def create_po(x: POIn, key: Optional[str] = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "purchasing"))):
+def create_po(x: POIn, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "purchasing"))):
     body = x.model_dump(mode="json")
     with Session(engine) as db:
         row, old = claim_idem(db, key, c["tenant_id"], "purchase-orders", body)
@@ -688,7 +688,7 @@ def approve_po(po_id: str, c=Depends(require_roles("admin"))):
     return transition_po(po_id, "approve", ("admin",), c)
 
 @app.post("/purchase-orders/{po_id}/receive")
-def receive_po(po_id: str, key: Optional[str] = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))):
+def receive_po(po_id: str, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))):
     return transition_po(po_id, "receive", ("admin", "inventory"), c, key)
 
 if SERVICE != "all":

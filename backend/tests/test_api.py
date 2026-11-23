@@ -1,27 +1,8 @@
-import os
-os.environ["DATABASE_URL"] = "sqlite:///./test-mvp.db"
-os.environ["SERVICE"] = "all"
-os.environ["ENVIRONMENT"] = "test"
-os.environ["JWT_SECRET"] = "test-secret-with-at-least-32-characters-long"
-
 from fastapi.testclient import TestClient
-import pytest
 
-from app.main import Base, engine, app, rds
+from app.main import app
 
-Base.metadata.drop_all(engine)
-Base.metadata.create_all(engine)
 client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def reset_redis_limiter():
-    if rds is not None:
-        try:
-            rds.flushdb()
-        except Exception:
-            pass
-    yield
 
 
 def register(email, tenant_code, tenant_name):
@@ -78,14 +59,16 @@ def test_unknown_movement_type_is_rejected_and_viewer_cannot_write():
     invalid = client.post("/inventory/adjust", headers=headers(admin, "invalid-movement"), json={"warehouse_id": warehouse["id"], "product_id": product["id"], "quantity": "1", "movement_type": "bogus"})
     assert invalid.status_code == 422
 
+
 def test_health_live_and_request_id():
-    response = client.get('/health/live', headers={'X-Request-ID': 'phase0-check'})
+    response = client.get("/health/live", headers={"X-Request-ID": "phase0-check"})
     assert response.status_code == 200
-    assert response.json() == {'status': 'ok'}
-    assert response.headers['X-Request-ID'] == 'phase0-check'
+    assert response.json() == {"status": "ok"}
+    assert response.headers["X-Request-ID"] == "phase0-check"
+
 
 def test_health_ready_fails_closed_without_dependencies():
-    response = client.get('/health/ready')
+    response = client.get("/health/ready")
     assert response.status_code in {200, 503}
     if response.status_code == 503:
-        assert 'checks' in response.json()['detail']
+        assert "checks" in response.json()["detail"]

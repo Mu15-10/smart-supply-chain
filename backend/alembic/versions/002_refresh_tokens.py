@@ -1,6 +1,8 @@
 """Add refresh token rotation storage."""
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
+
 revision = "002_refresh_tokens"
 down_revision = "001_initial"
 branch_labels = None
