@@ -90,12 +90,23 @@ REDIS_URL=redis://127.0.0.1:6379/15
 
 ## ما لم يُتحقق منه بعد
 
-- لم يُدفع إصلاح 1-ب إلى GitHub بعد هذه التغييرات، لذلك لا يوجد بعد رابط CI أخضر على commit الإصلاح.
-- لم يُنفذ Semgrep محلياً لأن CLI غير مثبت.
+- لم يُنفذ Semgrep محلياً لأن CLI غير مثبت؛ تم تشغيله بنجاح في job CI المستقل.
 - لم تُختبر آلية origin lockdown من خارج شبكة النشر؛ هذا شرط المرحلة 9.
 - لم يُتخذ قرار استضافة. قبل Render/Railway/أي منصة، يجب قراءة توثيقها الرسمي عن socket peer والheaders وتحديث ADR؛ إن لم يكن موثقاً يسجل كمخاطرة.
 - لم يُنفذ ADR مستقل لتقييم `CF-Connecting-IP`؛ مؤجل إلى المرحلة 9 عند النشر خلف Cloudflare.
 - لم تُنفذ load testing أو backup/restore أو managed PostgreSQL أو monitoring production.
+
+## تحقق GitHub Actions
+
+تم تشغيل workflow بعد دفع الإصلاح، وكانت النتيجة **success** على commit `efe2da9`:
+
+- [Foundation CI #45257273495](https://github.com/Mu15-10/smart-supply-chain/actions/runs/45257273495)
+- `backend`: **success** — PostgreSQL/Redis، pytest، Ruff، format، mypy، وmigration checks.
+- `dependency-audit`: **success** — `pip-audit` في job مستقل.
+- `semgrep`: **success** — Semgrep مع `--metrics=off`.
+- `frontend`: **success**.
+- `container`: **success**.
+- `secrets`: **success** — gitleaks مع full history.
 
 ## درس مستفاد
 
