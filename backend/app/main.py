@@ -17,7 +17,7 @@ import redis
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from pymongo import MongoClient
 from pymongo.database import Database
 from pymongo.errors import PyMongoError
@@ -502,7 +502,11 @@ def password_is_weak(value: str, email: str) -> bool:
     return False
 
 
-class Register(BaseModel):
+class StrictInputModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class Register(StrictInputModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
     display_name: str
@@ -516,59 +520,59 @@ class Register(BaseModel):
         return self
 
 
-class Login(BaseModel):
+class Login(StrictInputModel):
     email: EmailStr
     password: str = Field(max_length=128)
 
 
-class InvitationIn(BaseModel):
+class InvitationIn(StrictInputModel):
     email: EmailStr
     role: Literal["admin", "purchasing", "inventory", "viewer"]
 
 
-class AcceptInvitation(BaseModel):
+class AcceptInvitation(StrictInputModel):
     token: str = Field(min_length=20)
     password: str = Field(min_length=10, max_length=128)
     display_name: str = Field(min_length=1, max_length=200)
 
 
-class RefreshIn(BaseModel):
+class RefreshIn(StrictInputModel):
     refresh_token: str = Field(min_length=20, max_length=256)
 
 
-class SupplierIn(BaseModel):
+class SupplierIn(StrictInputModel):
     supplier_code: str
     legal_name: str
     lead_time_days: int = Field(ge=0, default=0)
 
 
-class ProductIn(BaseModel):
+class ProductIn(StrictInputModel):
     sku: str
     name: str
     unit_of_measure: str = "unit"
     reorder_point: Decimal = Field(ge=0, default=Decimal("0"))
 
 
-class WarehouseIn(BaseModel):
+class WarehouseIn(StrictInputModel):
     code: str
     name: str
 
 
-class AdjustIn(BaseModel):
+class AdjustIn(StrictInputModel):
     warehouse_id: str
     product_id: str
     quantity: Decimal
     movement_type: Literal["receipt", "adjustment", "issue"] = "receipt"
 
 
-class LineIn(BaseModel):
+class LineIn(StrictInputModel):
     product_id: str
     ordered_qty: Decimal = Field(gt=0)
     unit_price: Decimal = Field(ge=0)
     tax_rate: Decimal = Field(ge=0, le=1, default=Decimal("0"))
 
 
-class POIn(BaseModel):
+class POIn(StrictInputModel):
     supplier_id: str
     warehouse_id: str
     currency: str = Field(default="USD", min_length=3, max_length=3)
