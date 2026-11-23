@@ -60,13 +60,23 @@ REDIS_URL=redis://127.0.0.1:6379/15
 - `mypy backend/app --ignore-missing-imports`: **Success: no issues found in 3 source files**.
 - `git diff --check`: passed.
 
+## تحقق GitHub Actions
+
+تم تشغيل CI بعد دفع commits الوحدة، وكانت النتيجة **success**:
+
+- التشغيل: [Foundation CI #45200819973](https://github.com/Mu15-10/smart-supply-chain/actions/runs/45200819973)
+- commit: `382b2c5`.
+- `backend`: **success**.
+- `frontend`: **success**.
+- `container`: **success**.
+- `secrets`/gitleaks: **success**.
+
 ## ما لم يُنفذ
 
 - لم يبدأ تقسيم `main.py` إلى modules.
 - لم تُنفذ مراجعة Semgrep مستقلة.
 - لم تُنفذ load testing أو backup/restore أو production managed database.
 - لم تُجرَ مراجعة قانونية أو إعداد monitoring production.
-- لم يُشغّل GitHub Actions على commits 1-ب بعد؛ يلزم الدفع ثم انتظار CI الأخضر.
 
 ## المخاطر المفتوحة
 
