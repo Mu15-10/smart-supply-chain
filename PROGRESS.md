@@ -2,10 +2,10 @@
 
 ## Current gate
 
-- Phase: `1-b-fix` — trusted proxy and refresh-family security remediation
+- Phase: `1-c` — multi-tenant isolation and authorization hardening
 - Branch: `hardening/phase-0`
-- Status: `done; awaiting written approval for 1-c`
-- Last verified commit: `f6ab425`
+- Status: `in progress; first policy/isolation unit closed locally`
+- Last verified commit: `4915c48`
 
 ## Decisions
 
@@ -27,7 +27,8 @@
 - [done] Foundation CI published and green on `f6ab425`
 - [done] Local build baseline; load baseline remains open
 - [done] 1-b trusted proxy CIDR/XFF remediation, refresh-family logout/reuse hardening, and staging acceptance criteria
-- [blocked] 1-c tenant isolation and authorization requires written manager approval
+- [doing] 1-c policy contracts, mass-assignment rejection, tenant isolation, nested BOLA, and tenant-scoped idempotency tests
+- [open] 1-c complete route matrix, Redis key audit, and PostgreSQL RLS decision
 
 ## Open decisions
 
