@@ -1,4 +1,5 @@
 """Central environment validation for the foundation gate."""
+
 from functools import lru_cache
 
 from pydantic import Field, field_validator
@@ -50,9 +51,7 @@ class Settings(BaseSettings):
     def validate_production(self) -> None:
         origins = [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
         if self.environment == "production" and (
-            not origins
-            or "*" in origins
-            or any(origin.startswith("http://") for origin in origins)
+            not origins or "*" in origins or any(origin.startswith("http://") for origin in origins)
         ):
             raise ValueError("Production ALLOWED_ORIGINS must contain explicit HTTPS origins")
         if self.environment == "production" and self.docs_enabled:

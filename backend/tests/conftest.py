@@ -1,4 +1,5 @@
 """Shared test bootstrap for SQLite-local and PostgreSQL CI runs."""
+
 from __future__ import annotations
 
 import logging
