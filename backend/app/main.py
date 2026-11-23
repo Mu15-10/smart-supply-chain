@@ -276,7 +276,7 @@ def get_client_ip(request: Request) -> str:
     if TRUSTED_PROXY_COUNT <= 0:
         return fallback
     values = [v.strip() for v in request.headers.get("X-Forwarded-For", "").split(",") if v.strip()]
-    candidate = values[len(values) - TRUSTED_PROXY_COUNT] if len(values) >= TRUSTED_PROXY_COUNT else ""
+    candidate = values[max(0, len(values) - TRUSTED_PROXY_COUNT - 1)] if values else ""
     try:
         ipaddress.ip_address(candidate)
         return candidate
@@ -614,9 +614,9 @@ def login(request: Request, x: Login):
 @app.post("/auth/refresh")
 def refresh(request: Request, x: RefreshIn):
     ip = get_client_ip(request)
-    refresh_key = f"refresh:{ip}"
-    check_limit(refresh_key, 30)
-    hit_limit(refresh_key, 60)
+    refresh_key = limiter_key("refresh", ip)
+    check_limit(refresh_key, settings.refresh_max_per_ip)
+    hit_limit(refresh_key, settings.refresh_window_seconds)
     token_hash = hashlib.sha256(x.refresh_token.encode()).hexdigest()
     now = datetime.now(UTC)
     with Session(engine) as db:
