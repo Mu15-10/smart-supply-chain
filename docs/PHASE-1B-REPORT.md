@@ -28,7 +28,7 @@
 
 ### logout وrefresh family
 
-- logout يلغي كل refresh tokens في family الخاصة بالرمز المرسل، وليس الرمز الحالي فقط.
+- logout يلغي كل refresh tokens في family الخاصة بالصف الذي يعثر عليه، سواء كان refresh token المرسل حياً أو قديماً revoked؛ قبل هذا الملحق كان الصف القديم يُتجاهل وتبقى descendants صالحة.
 - deny-list الخاص بـaccess-token `jti` بقي موجوداً.
 - logout برمز refresh غير معروف يعيد الاستجابة العامة نفسها ولا يكشف وجود الرمز.
 - reuse عبر عدة أجيال يلغي بقية العائلة ويسجل حدث outbox باسم `security.refresh_token_reuse_detected` دون تسجيل token خام.
@@ -48,6 +48,8 @@
 - logout يلغي ثلاثة أجيال.
 - reuse بعد ثلاثة أجيال يلغي العائلة ويسجل event.
 - Redis fail-closed في production.
+- `/metrics` العام يرد 404 بلا مصادقة؛ العداد يبقى process-local وغير موثوق مع عدة workers حتى تصميم Prometheus multiprocess.
+- logout برمز قديم، logout برمز يخص مستخدماً آخر، والرمز غير المعروف مع رد موحد.
 
 كل اختبار يحاكي سلوكاً خارجياً يضع تعليقاً يشرح النموذج. الأساس الخارجي المستخدم هو MDN وCloudflare وnginx كما هو موثق في ADR؛ لم تُفترض ranges لمنصة استضافة بعينها.
 
@@ -59,6 +61,8 @@
 | اختبارات الإصلاح ومراجعة نماذج الاختبار | `1f6f60e` | اختبارات XFF الواقعية، integration limits، logout family، reuse متعدد الأجيال، وتعليقات النمذجة. |
 | تحسين CI | `6138068` | timeout وconcurrency وRedis health وpip-audit منفصل وSemgrep مستقل. |
 | إصلاح حدود تحليل XFF وتدقيق ADR-001 | `f6ab425` | تجاهل prefix الواقع يسار العنوان المختار، اختبار `garbage!!`، ومعايير staging وتقييم port. |
+| إصلاحات ملحق 1-ب | `78ac120` | إزالة `/metrics` العام، debug fallback، وإلغاء family عند logout بالرمز القديم مع اختبارات العزل. |
+| تشديد Semgrep | `5e2a100` | تثبيت `semgrep==1.186.0` وتشغيل `p/python` و`p/security-audit`. |
 
 ## الأدلة المحلية الفعلية
 
@@ -72,13 +76,14 @@ REDIS_URL=redis://127.0.0.1:6379/15
 النتائج:
 
 - `[test-bootstrap] database dialect: postgresql`.
-- `pytest -s -q -rs`: **50 passed, 1 warning**.
+- `pytest -s -q -rs`: **53 passed, 1 warning**.
 - اختبارات 1-ب وPostgreSQL concurrency: **19 passed, 1 warning**.
 - `ruff check backend`: **All checks passed**.
 - `ruff format --check backend`: **18 files already formatted**.
 - `mypy backend/app --ignore-missing-imports`: **Success: no issues found in 3 source files**.
 - `git diff --check`: passed.
-- Semgrep لم يكن مثبتاً محلياً؛ سيُتحقق منه في job CI مستقل باستخدام `--metrics=off`، ولا يُدّعى نجاحه محلياً.
+- Semgrep المحلي: الإصدار `1.186.0`، القاعدتان `p/python` و`p/security-audit`، **0 findings**. ظهر أثناء التثبيت تعارض محلي في `opentelemetry-api` مع FastAPI المثبتة؛ لم يؤثر على فحص Semgrep أو CI.
+- Alembic على PostgreSQL: `upgrade head → downgrade base → upgrade head → check` نجح، مع `No new upgrade operations detected.`
 
 ## تغييرات CI
 
@@ -90,6 +95,13 @@ REDIS_URL=redis://127.0.0.1:6379/15
 - job مستقل لـ`pip-audit`.
 - job مستقل لـSemgrep مع `--metrics=off`.
 - لم تتغير أي action SHA.
+- Semgrep أصبح مثبتاً على `semgrep==1.186.0` ويشغل `p/python` و`p/security-audit`.
+
+## ما اكتُشف بعد التقرير السابق
+
+- كان `/metrics` مكشوفاً بلا مصادقة ويعرض عدادات process-local؛ أزيل endpoint العام، وبقي العداد الداخلي في الذاكرة إلى حين تصميم مراقبة متعدد العمليات.
+- كان logout يبحث عن refresh token غير revoked فقط؛ لذلك كان logout بالرمز القديم يعيد 200 دون إلغاء descendants الحية. أصبح البحث عن الصف بغض النظر عن `revoked_at` ثم إلغاء family الخاصة بالمستخدم.
+- أضيفت اختبارات تثبت أن token من مستخدم آخر لا يؤثر، وأن token غير المعروف يحتفظ بالرد العام، وأن الرمز القديم يلغي token الابن الحي.
 
 ## ما لم يُتحقق منه بعد
 
@@ -112,6 +124,13 @@ REDIS_URL=redis://127.0.0.1:6379/15
 - `secrets`: **success** — gitleaks مع full history.
 - التشغيل أظهر تنبيهاً غير حاجب عن إجبار بعض actions التي تستهدف Node.js 20 على Node.js 24؛ لم يفشل أي job بسبب ذلك.
 
+### CI الخاص بملحق 1-ب
+
+- [Foundation CI #45260930226](https://github.com/Mu15-10/smart-supply-chain/actions/runs/45260930226) على commit `5e2a100`: **success**.
+- `backend`: **success** — PostgreSQL/Redis، 53 اختباراً، Ruff، format، mypy، وAlembic round-trip.
+- `semgrep`: **success** — Semgrep `1.186.0` مع `p/python` و`p/security-audit`.
+- `frontend`, `container`, `dependency-audit`, و`secrets`: **success**.
+
 ## درس مستفاد
 
 اختبار الأمان يجب أن يمثل سلوك العالم الحقيقي، لا الشكل الذي نتمنى أن تكون عليه البيانات. اختبار XFF السابق أدخل عنوان proxy داخل القائمة، بينما proxy الشائع يضيف عنوان peer إلى النهاية؛ لذلك بدا الإصلاح صحيحاً داخل الاختبار لكنه أعاد مساراً يسمح للمهاجم بتدوير prefix مزيف. منذ هذه الوحدة، كل اختبار proxy يحدد socket peer وسلوك الإضافة ومصدر الافتراض، وأي سلوك غير موثق يذكر كمخاطرة بدلاً من اعتباره حقيقة.
@@ -125,7 +144,8 @@ REDIS_URL=redis://127.0.0.1:6379/15
 - عند تقييم أي منصة استضافة يجب توثيق هل تضيف `port` داخل `X-Forwarded-For`؛ غياب التوثيق يسجل كمخاطرة.
 - عند Cloudflare نحتاج ADR مستقلاً لتقييم `CF-Connecting-IP` والتحقق من Authenticated Origin Pulls أو Tunnel.
 - logout family يغير سلوك الجلسات المقصود لصالح الإبطال الكامل؛ يجب مراجعة هذا في product acceptance.
+- عدادات fallback داخلية process-local؛ لا تستخدم كمرجع تشغيلي متعدد workers قبل مرحلة المراقبة.
 
 ## الخطوة التالية
 
-بعد نجاح CI على commit `f6ab425` أُغلقت بوابة 1-ب-إصلاح. الوحدة التالية المقترحة هي 1-ج لعزل tenants والصلاحيات، لكنها لا تبدأ قبل موافقة المدير الكتابية التالية.
+ملحق 1-ب أضاف حماية `/metrics`، وإلغاء family عند logout بالرمز القديم، واختبارات XFF للport والفساد في الجهة اليمنى. بعد نجاح CI على commit `5e2a100` وتسليم هذا التقرير، تبدأ 1-ج وفق الموافقة الحالية.
