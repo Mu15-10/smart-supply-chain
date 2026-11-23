@@ -1,8 +1,8 @@
 import os
 
 import pytest
-from redis.exceptions import RedisError
 from fastapi.testclient import TestClient
+from redis.exceptions import RedisError
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test-security.db")
 os.environ.setdefault("ENVIRONMENT", "test")

@@ -13,13 +13,14 @@ from typing import Literal
 
 import jwt
 import redis
-from redis.exceptions import RedisError
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from pymongo import MongoClient
+from pymongo.database import Database
 from pymongo.errors import PyMongoError
+from redis.exceptions import RedisError
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, create_engine, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -192,6 +193,7 @@ try:
 except (RedisError, ValueError, TypeError):
     rds = None
 try:
+    mongo: Database | None = None
     mongo = MongoClient(settings.mongo_url, serverSelectionTimeoutMS=500).supply_events
 except (PyMongoError, ValueError):
     mongo = None
@@ -290,7 +292,7 @@ def redis_available():
         return True
     except (RedisError, RuntimeError, OSError):
         if ENVIRONMENT == "production":
-            raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+            raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE") from None
         logger.warning("Redis unavailable; development security controls are degraded")
         return False
 
@@ -310,7 +312,7 @@ def check_limit(key, limit):
         raise
     except (RedisError, OSError, ValueError, TypeError):
         if ENVIRONMENT == "production":
-            raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+            raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE") from None
         logger.warning("Redis limiter read failed")
 
 
@@ -325,13 +327,13 @@ def hit_limit(key, window=LOGIN_WINDOW_SECONDS):
         pipe.execute()
     except (RedisError, OSError, ValueError, TypeError):
         if ENVIRONMENT == "production":
-            raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+            raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE") from None
         logger.warning("Redis limiter write failed")
 
 
 def auth(authorization: str | None = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "UNAUTHENTICATED")
+        raise HTTPException(401, "UNAUTHENTICATED") from None
     try:
         claims = jwt.decode(
             authorization[7:],
@@ -342,12 +344,12 @@ def auth(authorization: str | None = Header(None)):
             options={"require": ["sub", "tenant_id", "roles", "exp", "iss", "aud", "jti"]},
         )
         if redis_available() and rds.get(f"jwt-deny:{claims['jti']}"):
-            raise HTTPException(401, "UNAUTHENTICATED")
+            raise HTTPException(401, "UNAUTHENTICATED") from None
         return claims
     except HTTPException:
         raise
     except (jwt.PyJWTError, KeyError, TypeError, ValueError):
-        raise HTTPException(401, "UNAUTHENTICATED")
+        raise HTTPException(401, "UNAUTHENTICATED") from None
 
 
 def require_roles(*allowed_roles):
@@ -385,7 +387,7 @@ def claim_idem(db, key, tenant, route, body):
             raise HTTPException(409, "IDEMPOTENCY_KEY_REUSED")
         if existing.status == "done":
             return existing, existing.response
-        raise HTTPException(409, "IDEMPOTENCY_REQUEST_IN_PROGRESS")
+        raise HTTPException(409, "IDEMPOTENCY_REQUEST_IN_PROGRESS") from None
     row = IdempotencyKey(
         id=str(uuid.uuid4()), tenant_id=tenant, route=route, key=key, request_hash=digest, status="processing"
     )
@@ -401,7 +403,7 @@ def claim_idem(db, key, tenant, route, body):
         )
         if existing and existing.request_hash == digest and existing.status == "done":
             return existing, existing.response
-        raise HTTPException(409, "IDEMPOTENCY_REQUEST_IN_PROGRESS")
+        raise HTTPException(409, "IDEMPOTENCY_REQUEST_IN_PROGRESS") from None
     return row, None
 
 
@@ -469,7 +471,7 @@ class ProductIn(BaseModel):
     sku: str
     name: str
     unit_of_measure: str = "unit"
-    reorder_point: Decimal = Field(ge=0, default=0)
+    reorder_point: Decimal = Field(ge=0, default=Decimal("0"))
 
 
 class WarehouseIn(BaseModel):
@@ -488,7 +490,7 @@ class LineIn(BaseModel):
     product_id: str
     ordered_qty: Decimal = Field(gt=0)
     unit_price: Decimal = Field(ge=0)
-    tax_rate: Decimal = Field(ge=0, le=1, default=0)
+    tax_rate: Decimal = Field(ge=0, le=1, default=Decimal("0"))
 
 
 class POIn(BaseModel):
@@ -620,7 +622,7 @@ def refresh(request: Request, x: RefreshIn):
     with Session(engine) as db:
         row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash).with_for_update())
         if not row or row.expires_at.replace(tzinfo=UTC) <= now:
-            raise HTTPException(401, "UNAUTHENTICATED")
+            raise HTTPException(401, "UNAUTHENTICATED") from None
         if row.revoked_at:
             db.query(RefreshToken).filter(
                 RefreshToken.family_id == row.family_id, RefreshToken.revoked_at.is_(None)
@@ -629,7 +631,7 @@ def refresh(request: Request, x: RefreshIn):
             raise HTTPException(401, "REFRESH_TOKEN_REUSE_DETECTED")
         user = db.scalar(select(User).where(User.id == row.user_id, User.tenant_id == row.tenant_id))
         if not user:
-            raise HTTPException(401, "UNAUTHENTICATED")
+            raise HTTPException(401, "UNAUTHENTICATED") from None
         row.revoked_at = now
         raw = secrets.token_urlsafe(48)
         db.add(
@@ -668,7 +670,7 @@ def logout(x: RefreshIn, authorization: str | None = Header(None)):
             rds.setex(f"jwt-deny:{claims['jti']}", exp, "1")
         except (RedisError, OSError):
             if ENVIRONMENT == "production":
-                raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE")
+                raise HTTPException(503, "AUTH_TEMPORARILY_UNAVAILABLE") from None
             logger.warning("Redis logout deny-list write failed")
     token_hash = hashlib.sha256(x.refresh_token.encode()).hexdigest()
     with Session(engine) as db:
@@ -742,7 +744,7 @@ def create_supplier(x: SupplierIn, c=Depends(require_roles("admin", "purchasing"
             db.commit()
         except IntegrityError:
             db.rollback()
-            raise HTTPException(409, "SUPPLIER_CODE_ALREADY_EXISTS")
+            raise HTTPException(409, "SUPPLIER_CODE_ALREADY_EXISTS") from None
         return {"data": {"id": s.id, **x.model_dump(), "status": s.status}}
 
 
@@ -766,7 +768,7 @@ def create_product(x: ProductIn, c=Depends(require_roles("admin", "purchasing", 
             db.commit()
         except IntegrityError:
             db.rollback()
-            raise HTTPException(409, "SKU_ALREADY_EXISTS")
+            raise HTTPException(409, "SKU_ALREADY_EXISTS") from None
         return {"data": {"id": p.id, **x.model_dump(mode="json")}}
 
 
@@ -798,7 +800,7 @@ def create_warehouse(x: WarehouseIn, c=Depends(require_roles("admin", "inventory
             db.commit()
         except IntegrityError:
             db.rollback()
-            raise HTTPException(409, "WAREHOUSE_CODE_ALREADY_EXISTS")
+            raise HTTPException(409, "WAREHOUSE_CODE_ALREADY_EXISTS") from None
         return {"data": {"id": w.id, **x.model_dump()}}
 
 
@@ -916,7 +918,7 @@ def create_po(
             return old
         s = db.scalar(select(Supplier).where(Supplier.id == x.supplier_id, Supplier.tenant_id == c["tenant_id"]))
         w = db.scalar(select(Warehouse).where(Warehouse.id == x.warehouse_id, Warehouse.tenant_id == c["tenant_id"]))
-        ids = {l.product_id for l in x.lines}
+        ids = {line_input.product_id for line_input in x.lines}
         products_found = {
             p.id for p in db.scalars(select(Product).where(Product.tenant_id == c["tenant_id"], Product.id.in_(ids)))
         }
@@ -937,9 +939,9 @@ def create_po(
         db.flush()
         subtotal = Decimal(0)
         lines = []
-        for n, l in enumerate(x.lines, 1):
-            subtotal += l.ordered_qty * l.unit_price
-            line = POLine(id=str(uuid.uuid4()), purchase_order_id=po.id, line_no=n, **l.model_dump())
+        for n, line_input in enumerate(x.lines, 1):
+            subtotal += line_input.ordered_qty * line_input.unit_price
+            line = POLine(id=str(uuid.uuid4()), purchase_order_id=po.id, line_no=n, **line_input.model_dump())
             db.add(line)
             lines.append(
                 {
@@ -951,7 +953,10 @@ def create_po(
                 }
             )
         po.subtotal = subtotal
-        po.tax_total = sum((l.ordered_qty * l.unit_price * l.tax_rate for l in x.lines), Decimal(0))
+        po.tax_total = sum(
+            (line_input.ordered_qty * line_input.unit_price * line_input.tax_rate for line_input in x.lines),
+            Decimal(0),
+        )
         po.total = po.subtotal + po.tax_total
         emit(
             db,

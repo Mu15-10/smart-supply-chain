@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     service: str = "all"
     environment: str = "development"
     database_url: str = "sqlite:///./supply.db"
-    jwt_secret: str = Field(min_length=32)
+    jwt_secret: str = Field(default="", min_length=32)
     redis_url: str = "redis://localhost:6379/0"
     mongo_url: str = "mongodb://localhost:27017"
     allowed_origins: str = "http://localhost:5173"

@@ -28,3 +28,5 @@ ignore = ["B008"]
 [tool.ruff.lint.per-file-ignores]
 # Test fixtures intentionally use environment variables before importing the app.
 "tests/*.py" = ["S101"]
+"tests/conftest.py" = ["S608"]
+"tests/test_security_hardening.py" = ["S106"]

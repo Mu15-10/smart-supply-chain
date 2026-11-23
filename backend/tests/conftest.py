@@ -41,6 +41,12 @@ def pytest_report_header() -> str:
     return f"test database dialect: {dialect} (TEST_DATABASE_URL={'set' if USING_EXTERNAL_DATABASE else 'unset'})"
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    scheme = urlsplit(TEST_DATABASE_URL).scheme
+    dialect = scheme.split("+", 1)[0] or "unknown"
+    print(f"[test-bootstrap] database dialect: {dialect}")
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "postgres: test requires PostgreSQL via TEST_DATABASE_URL")
 
