@@ -80,6 +80,34 @@ def test_forwarded_address_is_ignored_without_trusted_proxy(monkeypatch: pytest.
     assert main.get_client_ip(request) == "10.0.0.1"
 
 
+class _BrokenRedis:
+    def ping(self):
+        raise main.RedisError("redis unavailable")
+
+    def pipeline(self, transaction: bool = True):
+        raise main.RedisError("redis unavailable")
+
+
+def test_redis_availability_fails_closed_in_production(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "rds", _BrokenRedis())
+    monkeypatch.setattr(main, "ENVIRONMENT", "production")
+
+    with pytest.raises(HTTPException, match="AUTH_TEMPORARILY_UNAVAILABLE") as raised:
+        main.redis_available()
+
+    assert raised.value.status_code == 503
+
+
+def test_redis_limiter_write_fails_closed_in_production(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "rds", _BrokenRedis())
+    monkeypatch.setattr(main, "ENVIRONMENT", "production")
+
+    with pytest.raises(HTTPException, match="AUTH_TEMPORARILY_UNAVAILABLE") as raised:
+        main.hit_limit("phase1b-fail-closed", window=60)
+
+    assert raised.value.status_code == 503
+
+
 def test_cors_allows_configured_origin_and_rejects_other_origin():
     allowed = client.options(
         "/health/live",
