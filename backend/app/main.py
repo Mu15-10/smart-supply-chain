@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import uuid
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
@@ -181,13 +182,25 @@ class Invitation(Base):
 
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 DUMMY_PASSWORD_HASH = pwd.hash(secrets.token_urlsafe(32))
-TRUSTED_PROXY_COUNT = settings.trusted_proxy_count
 LOGIN_MAX_PER_IP = settings.login_max_per_ip
 LOGIN_MAX_PER_ACCOUNT_IP = settings.login_max_per_account_ip
 LOGIN_WINDOW_SECONDS = settings.login_window_seconds
 ACCESS_TOKEN_MINUTES = settings.access_token_minutes
 REFRESH_TOKEN_DAYS = settings.refresh_token_days
 ALLOW_PUBLIC_REGISTRATION = settings.allow_public_registration
+MAX_XFF_ENTRIES = 64
+MAX_XFF_LENGTH = 8192
+try:
+    TRUSTED_PROXY_NETWORKS = tuple(
+        ipaddress.ip_network(value.strip(), strict=False)
+        for value in settings.trusted_proxy_cidrs.split(",")
+        if value.strip()
+    )
+except ValueError as exc:
+    raise ValueError("TRUSTED_PROXY_CIDRS contains an invalid CIDR") from exc
+CLIENT_IP_FALLBACK_TOTAL: Counter[str] = Counter()
+if ENVIRONMENT == "production" and not TRUSTED_PROXY_NETWORKS:
+    logger.warning("TRUSTED_PROXY_CIDRS is empty in production; X-Forwarded-For will be ignored")
 try:
     rds = redis.from_url(settings.redis_url, decode_responses=True)
 except (RedisError, ValueError, TypeError):
@@ -271,17 +284,71 @@ def emit(db, tenant_id, event_type, aggregate_id, payload):
     return event_id
 
 
+def _record_client_ip_fallback(reason: str) -> None:
+    CLIENT_IP_FALLBACK_TOTAL[reason] += 1
+    logger.warning("client_ip_fallback_total{reason=%s}", reason)
+
+
+def _normalized_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    address = ipaddress.ip_address(value)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped
+    return address
+
+
+def _trusted_proxy(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(address in network for network in TRUSTED_PROXY_NETWORKS)
+
+
 def get_client_ip(request: Request) -> str:
     fallback = request.client.host if request.client else "unknown"
-    if TRUSTED_PROXY_COUNT <= 0:
+    if not TRUSTED_PROXY_NETWORKS:
+        _record_client_ip_fallback("peer_not_trusted")
         return fallback
-    values = [v.strip() for v in request.headers.get("X-Forwarded-For", "").split(",") if v.strip()]
-    candidate = values[max(0, len(values) - TRUSTED_PROXY_COUNT - 1)] if values else ""
+    if not request.client:
+        _record_client_ip_fallback("peer_not_trusted")
+        return fallback
     try:
-        ipaddress.ip_address(candidate)
-        return candidate
+        peer = _normalized_ip(request.client.host)
     except ValueError:
+        _record_client_ip_fallback("peer_not_trusted")
         return fallback
+    if not _trusted_proxy(peer):
+        _record_client_ip_fallback("peer_not_trusted")
+        return fallback
+
+    header_values = request.headers.getlist("x-forwarded-for")
+    if not header_values or not any(header_values):
+        _record_client_ip_fallback("no_xff")
+        return fallback
+    joined = ",".join(header_values)
+    if len(joined) > MAX_XFF_LENGTH:
+        _record_client_ip_fallback("too_many_entries")
+        return fallback
+    raw_values = [value.strip() for value in joined.split(",")]
+    if len(raw_values) > MAX_XFF_ENTRIES:
+        _record_client_ip_fallback("too_many_entries")
+        return fallback
+    try:
+        values = [_normalized_ip(value) for value in raw_values]
+    except ValueError:
+        _record_client_ip_fallback("invalid_entry")
+        return fallback
+    for address in reversed(values):
+        if not _trusted_proxy(address):
+            return str(address)
+    _record_client_ip_fallback("all_trusted")
+    return fallback
+
+
+def rate_limit_ip(value: str) -> str:
+    try:
+        address = _normalized_ip(value)
+    except ValueError:
+        return value
+    if isinstance(address, ipaddress.IPv6Address):
+        return str(ipaddress.ip_network(f"{address}/64", strict=False).network_address) + "/64"
+    return str(address)
 
 
 def redis_available():
@@ -531,11 +598,20 @@ def health():
     return {"status": "ok", "service": SERVICE, "environment": ENVIRONMENT}
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    lines = [
+        f'client_ip_fallback_total{{reason="{reason}"}} {CLIENT_IP_FALLBACK_TOTAL[reason]}'
+        for reason in sorted(CLIENT_IP_FALLBACK_TOTAL)
+    ]
+    return Response("\n".join(lines) + ("\n" if lines else ""), media_type="text/plain; version=0.0.4")
+
+
 @app.post("/auth/register", status_code=201)
 def register(request: Request, x: Register):
     if not ALLOW_PUBLIC_REGISTRATION:
         raise HTTPException(403, "REGISTRATION_DISABLED")
-    registration_key = limiter_key("registration", get_client_ip(request))
+    registration_key = limiter_key("registration", rate_limit_ip(get_client_ip(request)))
     check_limit(registration_key, settings.registration_max_per_ip)
     hit_limit(registration_key, settings.login_window_seconds)
     email = str(x.email).strip().lower()
@@ -564,7 +640,7 @@ def register(request: Request, x: Register):
 @app.post("/auth/login")
 def login(request: Request, x: Login):
     email = str(x.email).strip().lower()
-    ip = get_client_ip(request)
+    ip = rate_limit_ip(get_client_ip(request))
     acct_key = limiter_key("login-fail:acct", f"{email}:{ip}")
     ip_key = limiter_key("login-fail:ip", ip)
     check_limit(ip_key, LOGIN_MAX_PER_IP)
@@ -613,7 +689,7 @@ def login(request: Request, x: Login):
 
 @app.post("/auth/refresh")
 def refresh(request: Request, x: RefreshIn):
-    ip = get_client_ip(request)
+    ip = rate_limit_ip(get_client_ip(request))
     refresh_key = limiter_key("refresh", ip)
     check_limit(refresh_key, settings.refresh_max_per_ip)
     hit_limit(refresh_key, settings.refresh_window_seconds)
@@ -627,6 +703,13 @@ def refresh(request: Request, x: RefreshIn):
             db.query(RefreshToken).filter(
                 RefreshToken.family_id == row.family_id, RefreshToken.revoked_at.is_(None)
             ).update({"revoked_at": now})
+            emit(
+                db,
+                row.tenant_id,
+                "security.refresh_token_reuse_detected",
+                row.user_id,
+                {"familyId": row.family_id},
+            )
             db.commit()
             raise HTTPException(401, "REFRESH_TOKEN_REUSE_DETECTED")
         user = db.scalar(select(User).where(User.id == row.user_id, User.tenant_id == row.tenant_id))
@@ -678,7 +761,11 @@ def logout(x: RefreshIn, authorization: str | None = Header(None)):
             select(RefreshToken).where(RefreshToken.token_hash == token_hash, RefreshToken.user_id == claims["sub"])
         )
         if row and not row.revoked_at:
-            row.revoked_at = datetime.now(UTC)
+            db.query(RefreshToken).filter(
+                RefreshToken.family_id == row.family_id,
+                RefreshToken.user_id == claims["sub"],
+                RefreshToken.revoked_at.is_(None),
+            ).update({"revoked_at": datetime.now(UTC)}, synchronize_session=False)
             db.commit()
     return {"data": {"logged_out": True}}
 

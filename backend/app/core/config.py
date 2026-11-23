@@ -1,8 +1,9 @@
 """Central environment validation for the foundation gate."""
 
+import os
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
     allowed_hosts: str = "localhost,127.0.0.1"
     docs_enabled: bool = True
     log_level: str = "INFO"
-    trusted_proxy_count: int = Field(default=0, ge=0)
+    trusted_proxy_cidrs: str = ""
     login_max_per_ip: int = Field(default=20, gt=0)
     login_max_per_account_ip: int = Field(default=5, gt=0)
     login_window_seconds: int = Field(default=900, gt=0)
@@ -41,6 +42,15 @@ class Settings(BaseSettings):
         if value not in {"development", "test", "staging", "production"}:
             raise ValueError("ENVIRONMENT must be development, test, staging, or production")
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_proxy_count(cls, values: object) -> object:
+        if isinstance(values, dict) and any(str(key).lower() == "trusted_proxy_count" for key in values):
+            raise ValueError("TRUSTED_PROXY_COUNT was removed; configure TRUSTED_PROXY_CIDRS")
+        if "TRUSTED_PROXY_COUNT" in os.environ:
+            raise ValueError("TRUSTED_PROXY_COUNT was removed; configure TRUSTED_PROXY_CIDRS")
+        return values
 
     def model_post_init(self, __context: object, /) -> None:
         if self.allow_public_registration is None:
