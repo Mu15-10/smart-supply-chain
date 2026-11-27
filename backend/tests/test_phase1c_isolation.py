@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
 
-from app.main import app
+from app.main import app, engine
 
 client = TestClient(app)
 
@@ -78,6 +80,13 @@ def _create_po(tokens: dict, resources: dict[str, dict], key: str) -> dict:
     return response.json()["data"]
 
 
+def _assert_bola_404(response, *hidden_ids: str):
+    assert response.status_code == 404
+    assert response.json().get("detail") in {"RESOURCE_NOT_FOUND", "PURCHASE_ORDER_NOT_FOUND"}
+    assert all(identifier not in response.text for identifier in hidden_ids)
+    assert all(identifier not in value for value in response.headers.values() for identifier in hidden_ids)
+
+
 def test_tenant_lists_and_nested_resources_are_isolated():
     # Models PostgreSQL-backed tenant predicates: a token from tenant A must not enumerate tenant B resources.
     tenant_a, tokens_a = _register("isolation-a")
@@ -126,7 +135,31 @@ def test_nested_bola_returns_404_and_does_not_create_cross_tenant_resources():
             "quantity": "1",
         },
     )
-    assert cross_inventory.status_code == 404
+    _assert_bola_404(
+        cross_inventory,
+        resources_b["warehouse"]["id"],
+        resources_b["product"]["id"],
+    )
+    cross_inventory_product_only = client.post(
+        "/inventory/adjust",
+        headers=_headers(tokens_a, "bola-cross-inventory-product-only"),
+        json={
+            "warehouse_id": resources_a["warehouse"]["id"],
+            "product_id": resources_b["product"]["id"],
+            "quantity": "1",
+        },
+    )
+    _assert_bola_404(cross_inventory_product_only, resources_b["product"]["id"])
+    cross_inventory_warehouse_only = client.post(
+        "/inventory/adjust",
+        headers=_headers(tokens_a, "bola-cross-inventory-warehouse-only"),
+        json={
+            "warehouse_id": resources_b["warehouse"]["id"],
+            "product_id": resources_a["product"]["id"],
+            "quantity": "1",
+        },
+    )
+    _assert_bola_404(cross_inventory_warehouse_only, resources_b["warehouse"]["id"])
 
     cross_po = client.post(
         "/purchase-orders",
@@ -137,11 +170,41 @@ def test_nested_bola_returns_404_and_does_not_create_cross_tenant_resources():
             "lines": [{"product_id": resources_b["product"]["id"], "ordered_qty": "1", "unit_price": "1"}],
         },
     )
-    assert cross_po.status_code == 404
+    _assert_bola_404(cross_po, resources_b["supplier"]["id"], resources_b["product"]["id"])
+    for key, supplier_id, warehouse_id, product_id in (
+        (
+            "bola-cross-po-supplier-only",
+            resources_b["supplier"]["id"],
+            resources_a["warehouse"]["id"],
+            resources_a["product"]["id"],
+        ),
+        (
+            "bola-cross-po-warehouse-only",
+            resources_a["supplier"]["id"],
+            resources_b["warehouse"]["id"],
+            resources_a["product"]["id"],
+        ),
+        (
+            "bola-cross-po-product-only",
+            resources_a["supplier"]["id"],
+            resources_a["warehouse"]["id"],
+            resources_b["product"]["id"],
+        ),
+    ):
+        response = client.post(
+            "/purchase-orders",
+            headers=_headers(tokens_a, key),
+            json={
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "lines": [{"product_id": product_id, "ordered_qty": "1", "unit_price": "1"}],
+            },
+        )
+        _assert_bola_404(response, supplier_id, warehouse_id, product_id)
 
     own_po = _create_po(tokens_a, resources_a, "bola-own-po")
     cross_transition = client.post(f"/purchase-orders/{own_po['id']}/submit", headers=_headers(tokens_b))
-    assert cross_transition.status_code == 404
+    _assert_bola_404(cross_transition, own_po["id"])
 
 
 def test_same_idempotency_key_isolated_by_tenant():
@@ -163,3 +226,37 @@ def test_same_idempotency_key_isolated_by_tenant():
             },
         )
         assert response.status_code == 201, response.text
+
+
+def test_same_idempotency_key_concurrently_isolated_by_tenant():
+    # Models two tenants concurrently claiming one external operation key; PostgreSQL uniqueness includes tenant_id.
+    _, tokens_a = _register("idem-concurrent-a")
+    _, tokens_b = _register("idem-concurrent-b")
+    resources_a = _resources(tokens_a, "idem-concurrent-a")
+    resources_b = _resources(tokens_b, "idem-concurrent-b")
+    key = "same-concurrent-key-different-tenants"
+
+    def adjust_for(pair: tuple[dict, dict[str, dict]]):
+        tokens, resources = pair
+        return client.post(
+            "/inventory/adjust",
+            headers=_headers(tokens, key),
+            json={
+                "warehouse_id": resources["warehouse"]["id"],
+                "product_id": resources["product"]["id"],
+                "quantity": "1",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(adjust_for, ((tokens_a, resources_a), (tokens_b, resources_b))))
+    assert [response.status_code for response in responses] == [201, 201]
+
+
+def test_idempotency_constraint_is_tenant_route_key_scoped():
+    # Models the database contract rather than trusting only application-level duplicate handling.
+    unique_constraints = inspect(engine).get_unique_constraints("idempotency_keys")
+    assert any(
+        constraint["name"] == "uq_idem_tenant_route_key" and constraint["column_names"] == ["tenant_id", "route", "key"]
+        for constraint in unique_constraints
+    )

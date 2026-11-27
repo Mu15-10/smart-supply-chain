@@ -1028,7 +1028,7 @@ def create_po(x: POIn, key: str | None = Header(None, alias="Idempotency-Key"), 
         if not s or not w:
             raise HTTPException(404, "RESOURCE_NOT_FOUND")
         if len(products_found) != len(ids):
-            raise HTTPException(404, "PRODUCT_NOT_FOUND")
+            raise HTTPException(404, "RESOURCE_NOT_FOUND")
         po = PurchaseOrder(
             id=str(uuid.uuid4()),
             tenant_id=c["tenant_id"],
