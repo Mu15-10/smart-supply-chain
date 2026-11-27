@@ -1,6 +1,10 @@
 
 ## الوحدة الثانية — enforcement والمصفوفات والتدقيق
 
+### ملاحظة مراجعة وتصحيح regression
+
+بعد مراجعة المدير اكتُشف أن policy path-only كانت تجعل GET lists تستخدم أدوار POST وتعيد `403` لأدوار viewer/purchasing/inventory. كما أن golden matrix كانت مشتقة من policy نفسها. أُصلحت policy إلى مفتاح `(method, path)`، وأصبحت توقعات الأدوار في `GOLDEN_ROUTE_ROLES` مكتوبة مستقلاً عن `policy.py`. أضيفت تغطية GET `/inventory` مع `warehouse_id` و`product_id` و`low_stock` من tenant آخر، وتثبت `200` مع قائمة فارغة وعدم تسريب IDs أو counts.
+
 ### policy enforcement كمصدر حقيقة مفروض
 
 - `FastAPI` أصبح يركب dependency مركزية واحدة باسم `enforce_route_policy`.
@@ -19,21 +23,19 @@
 
 ### إثبات mutation
 
-شُغّل `scripts/mutation_tenant_queries.py` على PostgreSQL. السكربت يزيل tenant predicate واحداً في كل مرة، يشغل `tests/test_phase1c_isolation.py`، ثم يعيد الملف إلى حالته الأصلية في `finally`.
+شُغّل `scripts/mutation_tenant_queries.py` على PostgreSQL. السكربت يكتشف AST كل مقارنة تحتوي `.tenant_id`، ينشئ نسخة مؤقتة لكل mutant، يشغل `tests/test_phase1c_isolation.py`، ولا يلمس working tree الأصلي.
 
 | الاستعلام/الموضع | هل فشل اختبار؟ |
 |---|---|
-| supplier list tenant predicate | نعم — `FAIL_DETECTED` |
-| product list tenant predicate | نعم — `FAIL_DETECTED` |
-| warehouse list tenant predicate | نعم — `FAIL_DETECTED` |
-| purchase-order list tenant predicate | نعم — `FAIL_DETECTED` |
-| inventory adjust product predicate | نعم — `FAIL_DETECTED` |
-| inventory adjust warehouse predicate | نعم — `FAIL_DETECTED` |
-| purchase-order supplier predicate | نعم — `FAIL_DETECTED` |
-| purchase-order warehouse predicate | نعم — `FAIL_DETECTED` |
-| purchase-order transition predicate | نعم — `FAIL_DETECTED` |
+| AST-discovered comparison | النتيجة |
+|---|---|
+| 12 موضعاً تغطيها اختبارات العزل | `FAIL_DETECTED` |
+| `User.tenant_id == row.tenant_id` في refresh | survivor مصنف equivalent: `User.id` PK عالمي والـ row يحمل tenant |
+| `Product.tenant_id == c["tenant_id"]` في GET inventory | survivor مصنف test gap: لا توجد fixture فساد product/inventory عابر للـ tenant |
+| `Inventory.tenant_id == c["tenant_id"]` في adjust/approve/receive | survivors مصنفة test gap: لا توجد fixtures لصفوف inventory فاسدة بمالك مختلف |
+| tenant predicate في مسار IntegrityError لـ idempotency | survivor مصنف equivalent بعد `uq_idem_tenant_route_key` |
 
-النتيجة: **9/9 mutations detected**. ظهرت فجوتان أثناء التدقيق، ثم أضيفت حالات mixed-ownership التي جعلت كل mutation يفشل اختباراً واحداً على الأقل.
+النتيجة: **18 موضعاً AST مكتشفاً**؛ 12 موضعاً فشل اختبارها، و6 survivors صُنّفت صراحةً (2 equivalent و4 مواضع test-gap مكررة على تعبيرين). التفاصيل والدليل في [TENANT-MUTATION-AUDIT.md](TENANT-MUTATION-AUDIT.md). guard يفشل لأي target غير مختبر أو غير مصنف.
 
 ### Redis وIdempotency
 
@@ -55,13 +57,16 @@ REDIS_URL=redis://127.0.0.1:6379/15
 [test-bootstrap] database dialect: postgresql
 ```
 
-- `pytest -s -q -rs`: **150 passed, 1 warning**.
+- `pytest -s -q -rs`: **152 passed, 1 warning** على PostgreSQL/Redis، مع header `test database dialect: postgresql`.
 - `tests/test_phase1c_isolation.py`: **5 passed, 1 warning**.
+- policy/enforcement regression suite بعد الإصلاح: **27 passed، 1 warning**.
+- policy/enforcement/isolation targeted suite بعد الإصلاح: **32 passed، 1 warning**.
 - HTTP mass-assignment matrix: **66 passed, 1 warning**.
 - `ruff check .`: **All checks passed**.
-- `ruff format --check .`: **23 files already formatted**.
+- `ruff format --check backend scripts`: **24 files already formatted**.
 - `mypy app --ignore-missing-imports`: **Success: no issues found in 4 source files**.
-- mutation audit: **9/9 FAIL_DETECTED**.
+- mutation audit AST: **18 positions discovered، 12 FAIL_DETECTED، و6 survivors classified؛ guard exit code 0**.
+- auth cache: protected `/suppliers` request أثبت `jwt.decode` مرة واحدة، مع إعادة استخدام `request.state.auth_claims`.
 - RLS prototype: نجح تشغيل PostgreSQL الفعلي، ثم حُذف schema والأدوار التجريبية.
 
 ## Commits الجديدة
@@ -72,6 +77,13 @@ REDIS_URL=redis://127.0.0.1:6379/15
 | BOLA/mixed ownership وresponse موحد | `cd7b41e` | 404 موحد واختبارات nested identifiers والتزامن. |
 | authorization وmass-assignment matrices | `b63a21d` | مصفوفات مولّدة من routes، 66 حالة HTTP. |
 | Redis audit وRLS prototype وmutation tool | `ca30cb6` | جرد المفاتيح، ADR-002، و9/9 mutation detection. |
+
+### تغييرات المراجعة الحالية غير committed بعد
+
+- method/path policy وgolden authorization مستقل.
+- GET inventory cross-tenant filters.
+- AST mutation discovery/classification وCI scheduled/manual guard.
+- auth verification call-count regression test.
 
 ## الحالة والبوابة
 
