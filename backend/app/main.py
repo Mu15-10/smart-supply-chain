@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from .core.config import get_settings
+from .core.policy import policy_for_route, validate_route_policy_table
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
@@ -211,12 +212,34 @@ try:
 except (PyMongoError, ValueError):
     mongo = None
 
+
+def enforce_route_policy(request: Request):
+    """Apply the central route policy before a handler executes."""
+
+    route = request.scope.get("route")
+    path = getattr(route, "path", request.url.path)
+    policy = policy_for_route(path)
+    if policy is None or request.method not in policy.methods:
+        raise RuntimeError(f"No central policy for {request.method} {path}")
+    if policy.access == "public":
+        return None
+    claims = auth(request.headers.get("authorization"))
+    if policy.requires_tenant and not claims.get("tenant_id"):
+        raise HTTPException(401, "UNAUTHENTICATED")
+    required_roles = policy.roles - {"authenticated"}
+    if required_roles and not set(claims.get("roles", [])) & required_roles:
+        raise HTTPException(403, "FORBIDDEN")
+    request.state.auth_claims = claims
+    return claims
+
+
 app = FastAPI(
     title=f"Madar Supply Control - {SERVICE} service",
     version="0.3.0",
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
     openapi_url="/openapi.json" if settings.docs_enabled else None,
+    dependencies=[Depends(enforce_route_policy)],
 )
 origins = [x.strip() for x in settings.allowed_origins.split(",") if x.strip()]
 app.add_middleware(
@@ -425,15 +448,6 @@ def auth(authorization: str | None = Header(None)):
         raise
     except (jwt.PyJWTError, KeyError, TypeError, ValueError):
         raise HTTPException(401, "UNAUTHENTICATED") from None
-
-
-def require_roles(*allowed_roles):
-    def dependency(c=Depends(auth)):
-        if not set(c.get("roles", [])) & set(allowed_roles):
-            raise HTTPException(403, "FORBIDDEN")
-        return c
-
-    return dependency
 
 
 def digest_body(body):
@@ -774,7 +788,7 @@ def logout(x: RefreshIn, authorization: str | None = Header(None)):
 
 
 @app.post("/auth/invitations", status_code=201)
-def create_invitation(x: InvitationIn, c=Depends(require_roles("admin"))):
+def create_invitation(x: InvitationIn, c=Depends(auth)):
     raw = secrets.token_urlsafe(32)
     with Session(engine) as db:
         invitation = Invitation(
@@ -829,7 +843,7 @@ def accept_invitation(x: AcceptInvitation):
 
 
 @app.post("/suppliers", status_code=201)
-def create_supplier(x: SupplierIn, c=Depends(require_roles("admin", "purchasing"))):
+def create_supplier(x: SupplierIn, c=Depends(auth)):
     with Session(engine) as db:
         s = Supplier(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], **x.model_dump())
         db.add(s)
@@ -853,7 +867,7 @@ def suppliers(c=Depends(auth)):
 
 
 @app.post("/products", status_code=201)
-def create_product(x: ProductIn, c=Depends(require_roles("admin", "purchasing", "inventory"))):
+def create_product(x: ProductIn, c=Depends(auth)):
     with Session(engine) as db:
         p = Product(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], **x.model_dump())
         db.add(p)
@@ -885,7 +899,7 @@ def products(c=Depends(auth)):
 
 
 @app.post("/warehouses", status_code=201)
-def create_warehouse(x: WarehouseIn, c=Depends(require_roles("admin", "inventory"))):
+def create_warehouse(x: WarehouseIn, c=Depends(auth)):
     with Session(engine) as db:
         w = Warehouse(id=str(uuid.uuid4()), tenant_id=c["tenant_id"], **x.model_dump())
         db.add(w)
@@ -939,9 +953,7 @@ def inventory(warehouse_id: str | None = None, product_id: str | None = None, lo
 
 
 @app.post("/inventory/adjust", status_code=201)
-def adjust(
-    x: AdjustIn, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))
-):
+def adjust(x: AdjustIn, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(auth)):
     if x.movement_type != "adjustment" and x.quantity <= 0:
         raise HTTPException(422, "QUANTITY_MUST_BE_POSITIVE")
     if x.movement_type == "adjustment" and x.quantity == 0:
@@ -1001,9 +1013,7 @@ def adjust(
 
 
 @app.post("/purchase-orders", status_code=201)
-def create_po(
-    x: POIn, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "purchasing"))
-):
+def create_po(x: POIn, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(auth)):
     body = x.model_dump(mode="json")
     with Session(engine) as db:
         row, old = claim_idem(db, key, c["tenant_id"], "purchase-orders", body)
@@ -1167,19 +1177,17 @@ def transition_po(po_id, target, roles, c, key=None):
 
 
 @app.post("/purchase-orders/{po_id}/submit")
-def submit_po(po_id: str, c=Depends(require_roles("admin", "purchasing"))):
+def submit_po(po_id: str, c=Depends(auth)):
     return transition_po(po_id, "submit", ("admin", "purchasing"), c)
 
 
 @app.post("/purchase-orders/{po_id}/approve")
-def approve_po(po_id: str, c=Depends(require_roles("admin"))):
+def approve_po(po_id: str, c=Depends(auth)):
     return transition_po(po_id, "approve", ("admin",), c)
 
 
 @app.post("/purchase-orders/{po_id}/receive")
-def receive_po(
-    po_id: str, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(require_roles("admin", "inventory"))
-):
+def receive_po(po_id: str, key: str | None = Header(None, alias="Idempotency-Key"), c=Depends(auth)):
     return transition_po(po_id, "receive", ("admin", "inventory"), c, key)
 
 
@@ -1197,3 +1205,5 @@ if SERVICE != "all":
         if getattr(route, "path", "") == "/health"
         or any(getattr(route, "path", "").startswith(prefix) for prefix in allowed)
     ]
+
+validate_route_policy_table(app.routes)

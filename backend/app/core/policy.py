@@ -1,7 +1,10 @@
 """Central route authorization policy metadata for tenant isolation tests."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
+
+from fastapi.routing import APIRoute
 
 
 @dataclass(frozen=True)
@@ -71,3 +74,20 @@ def policy_for_route(path: str) -> RoutePolicy | None:
     """Return the exact policy for a FastAPI route path, if declared."""
 
     return ROUTE_POLICY_TABLE.get(path)
+
+
+def validate_route_policy_table(routes: Sequence[object]) -> None:
+    """Fail closed when a registered HTTP route has no central authorization policy."""
+
+    missing: list[str] = []
+    for route in routes:
+        if not isinstance(route, APIRoute):
+            continue
+        policy = policy_for_route(route.path)
+        if policy is None:
+            missing.append(route.path)
+            continue
+        if not set(route.methods or ()) <= policy.methods | {"HEAD"}:
+            missing.append(f"{route.path} (methods={sorted(route.methods or ())})")
+    if missing:
+        raise RuntimeError(f"Routes missing central policy: {', '.join(sorted(set(missing)))}")
