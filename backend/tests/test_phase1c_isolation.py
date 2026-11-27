@@ -207,6 +207,52 @@ def test_nested_bola_returns_404_and_does_not_create_cross_tenant_resources():
     _assert_bola_404(cross_transition, own_po["id"])
 
 
+def test_inventory_get_filters_do_not_cross_tenant_or_leak_counts():
+    # Models an authenticated tenant querying a collection with another tenant's identifiers in every filter.
+    _, tokens_a = _register("inventory-get-a")
+    _, tokens_b = _register("inventory-get-b")
+    resources_a = _resources(tokens_a, "inventory-get-a")
+    resources_b = _resources(tokens_b, "inventory-get-b")
+    seeded = client.post(
+        "/inventory/adjust",
+        headers=_headers(tokens_b, "inventory-get-seed"),
+        json={
+            "warehouse_id": resources_b["warehouse"]["id"],
+            "product_id": resources_b["product"]["id"],
+            "quantity": "7",
+        },
+    )
+    assert seeded.status_code == 201, seeded.text
+
+    for query in (
+        {"warehouse_id": resources_b["warehouse"]["id"]},
+        {"product_id": resources_b["product"]["id"]},
+        {
+            "warehouse_id": resources_b["warehouse"]["id"],
+            "product_id": resources_b["product"]["id"],
+            "low_stock": "true",
+        },
+    ):
+        response = client.get("/inventory", params=query, headers=_headers(tokens_a))
+        assert response.status_code == 200
+        assert response.json() == {"data": []}
+        assert resources_b["warehouse"]["id"] not in response.text
+        assert resources_b["product"]["id"] not in response.text
+        assert "7" not in response.text
+
+    own_response = client.get(
+        "/inventory",
+        params={
+            "warehouse_id": resources_a["warehouse"]["id"],
+            "product_id": resources_a["product"]["id"],
+            "low_stock": "true",
+        },
+        headers=_headers(tokens_a),
+    )
+    assert own_response.status_code == 200
+    assert own_response.json()["data"] == []
+
+
 def test_same_idempotency_key_isolated_by_tenant():
     # Models PostgreSQL uniqueness on (tenant_id, route, key): identical keys in separate tenants do not collide.
     _, tokens_a = _register("idem-a")

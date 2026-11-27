@@ -1,4 +1,4 @@
-"""Central route authorization policy metadata for tenant isolation tests."""
+"""Central method/path authorization policy contracts."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -9,12 +9,15 @@ from fastapi.routing import APIRoute
 
 @dataclass(frozen=True)
 class RoutePolicy:
-    """Authorization contract for one normalized FastAPI route path."""
+    """Authorization contract for one normalized HTTP method and route path."""
 
-    methods: frozenset[str]
     roles: frozenset[str]
     requires_tenant: bool
     access: str
+
+
+def _policy(roles: tuple[str, ...], requires_tenant: bool, access: str) -> RoutePolicy:
+    return RoutePolicy(frozenset(roles), requires_tenant, access)
 
 
 PUBLIC_ROUTE_WHITELIST: Final[frozenset[tuple[str, str]]] = frozenset(
@@ -35,59 +38,51 @@ PUBLIC_ROUTE_WHITELIST: Final[frozenset[tuple[str, str]]] = frozenset(
 )
 
 
-def _policy(
-    methods: tuple[str, ...],
-    roles: tuple[str, ...],
-    requires_tenant: bool,
-    access: str,
-) -> RoutePolicy:
-    return RoutePolicy(frozenset(methods), frozenset(roles), requires_tenant, access)
-
-
-ROUTE_POLICY_TABLE: Final[dict[str, RoutePolicy]] = {
-    "/health/live": _policy(("GET",), (), False, "public"),
-    "/health/ready": _policy(("GET",), (), False, "public"),
-    "/health": _policy(("GET",), (), False, "public"),
-    "/docs": _policy(("GET",), (), False, "public"),
-    "/redoc": _policy(("GET",), (), False, "public"),
-    "/openapi.json": _policy(("GET",), (), False, "public"),
-    "/docs/oauth2-redirect": _policy(("GET",), (), False, "public"),
-    "/auth/register": _policy(("POST",), (), False, "public"),
-    "/auth/login": _policy(("POST",), (), False, "public"),
-    "/auth/refresh": _policy(("POST",), (), False, "public"),
-    "/auth/logout": _policy(("POST",), ("authenticated",), True, "write"),
-    "/auth/invitations": _policy(("POST",), ("admin",), True, "write"),
-    "/auth/accept-invitation": _policy(("POST",), (), False, "public"),
-    "/suppliers": _policy(("GET", "POST"), ("authenticated", "admin", "purchasing"), True, "read/write"),
-    "/products": _policy(("GET", "POST"), ("authenticated", "admin", "purchasing", "inventory"), True, "read/write"),
-    "/warehouses": _policy(("GET", "POST"), ("authenticated", "admin", "inventory"), True, "read/write"),
-    "/inventory": _policy(("GET",), ("authenticated",), True, "read"),
-    "/inventory/adjust": _policy(("POST",), ("admin", "inventory"), True, "write"),
-    "/purchase-orders": _policy(("GET", "POST"), ("authenticated", "admin", "purchasing"), True, "read/write"),
-    "/purchase-orders/{po_id}/submit": _policy(("POST",), ("admin", "purchasing"), True, "write"),
-    "/purchase-orders/{po_id}/approve": _policy(("POST",), ("admin",), True, "write"),
-    "/purchase-orders/{po_id}/receive": _policy(("POST",), ("admin", "inventory"), True, "write"),
+ROUTE_POLICY_TABLE: Final[dict[tuple[str, str], RoutePolicy]] = {
+    ("GET", "/health/live"): _policy((), False, "public"),
+    ("GET", "/health/ready"): _policy((), False, "public"),
+    ("GET", "/health"): _policy((), False, "public"),
+    ("GET", "/docs"): _policy((), False, "public"),
+    ("GET", "/redoc"): _policy((), False, "public"),
+    ("GET", "/openapi.json"): _policy((), False, "public"),
+    ("GET", "/docs/oauth2-redirect"): _policy((), False, "public"),
+    ("POST", "/auth/register"): _policy((), False, "public"),
+    ("POST", "/auth/login"): _policy((), False, "public"),
+    ("POST", "/auth/refresh"): _policy((), False, "public"),
+    ("POST", "/auth/logout"): _policy(("authenticated",), True, "write"),
+    ("POST", "/auth/invitations"): _policy(("admin",), True, "write"),
+    ("POST", "/auth/accept-invitation"): _policy((), False, "public"),
+    ("POST", "/suppliers"): _policy(("admin", "purchasing"), True, "write"),
+    ("GET", "/suppliers"): _policy(("admin", "purchasing", "inventory", "viewer"), True, "read"),
+    ("POST", "/products"): _policy(("admin", "purchasing", "inventory"), True, "write"),
+    ("GET", "/products"): _policy(("admin", "purchasing", "inventory", "viewer"), True, "read"),
+    ("POST", "/warehouses"): _policy(("admin", "inventory"), True, "write"),
+    ("GET", "/warehouses"): _policy(("admin", "purchasing", "inventory", "viewer"), True, "read"),
+    ("GET", "/inventory"): _policy(("admin", "purchasing", "inventory", "viewer"), True, "read"),
+    ("POST", "/inventory/adjust"): _policy(("admin", "inventory"), True, "write"),
+    ("POST", "/purchase-orders"): _policy(("admin", "purchasing"), True, "write"),
+    ("GET", "/purchase-orders"): _policy(("admin", "purchasing", "inventory", "viewer"), True, "read"),
+    ("POST", "/purchase-orders/{po_id}/submit"): _policy(("admin", "purchasing"), True, "write"),
+    ("POST", "/purchase-orders/{po_id}/approve"): _policy(("admin",), True, "write"),
+    ("POST", "/purchase-orders/{po_id}/receive"): _policy(("admin", "inventory"), True, "write"),
 }
 
 
-def policy_for_route(path: str) -> RoutePolicy | None:
-    """Return the exact policy for a FastAPI route path, if declared."""
+def policy_for_route(method: str, path: str) -> RoutePolicy | None:
+    """Return the exact policy for an HTTP method and FastAPI route path."""
 
-    return ROUTE_POLICY_TABLE.get(path)
+    return ROUTE_POLICY_TABLE.get((method.upper(), path))
 
 
 def validate_route_policy_table(routes: Sequence[object]) -> None:
-    """Fail closed when a registered HTTP route has no central authorization policy."""
+    """Fail closed when a registered HTTP method/path has no central policy."""
 
     missing: list[str] = []
     for route in routes:
         if not isinstance(route, APIRoute):
             continue
-        policy = policy_for_route(route.path)
-        if policy is None:
-            missing.append(route.path)
-            continue
-        if not set(route.methods or ()) <= policy.methods | {"HEAD"}:
-            missing.append(f"{route.path} (methods={sorted(route.methods or ())})")
+        for method in route.methods or ():
+            if policy_for_route(method, route.path) is None:
+                missing.append(f"{method} {route.path}")
     if missing:
         raise RuntimeError(f"Routes missing central policy: {', '.join(sorted(set(missing)))}")

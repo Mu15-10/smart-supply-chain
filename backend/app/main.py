@@ -218,12 +218,12 @@ def enforce_route_policy(request: Request):
 
     route = request.scope.get("route")
     path = getattr(route, "path", request.url.path)
-    policy = policy_for_route(path)
-    if policy is None or request.method not in policy.methods:
+    policy = policy_for_route(request.method, path)
+    if policy is None:
         raise RuntimeError(f"No central policy for {request.method} {path}")
     if policy.access == "public":
         return None
-    claims = auth(request.headers.get("authorization"))
+    claims = auth(request)
     if policy.requires_tenant and not claims.get("tenant_id"):
         raise HTTPException(401, "UNAUTHENTICATED")
     required_roles = policy.roles - {"authenticated"}
@@ -429,7 +429,11 @@ def hit_limit(key, window=LOGIN_WINDOW_SECONDS):
         logger.warning("Redis limiter write failed")
 
 
-def auth(authorization: str | None = Header(None)):
+def auth(request: Request):
+    cached_claims = getattr(request.state, "auth_claims", None)
+    if cached_claims is not None:
+        return cached_claims
+    authorization = request.headers.get("authorization")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "UNAUTHENTICATED") from None
     try:
@@ -443,6 +447,7 @@ def auth(authorization: str | None = Header(None)):
         )
         if redis_available() and rds.get(f"jwt-deny:{claims['jti']}"):
             raise HTTPException(401, "UNAUTHENTICATED") from None
+        request.state.auth_claims = claims
         return claims
     except HTTPException:
         raise
@@ -486,6 +491,8 @@ def claim_idem(db, key, tenant, route, body):
     except IntegrityError:
         db.rollback()
         existing = db.scalar(
+            # IntegrityError is constrained by uq_idem_tenant_route_key, so this
+            # tenant predicate is equivalent after the conflicting insert.
             select(IdempotencyKey)
             .where(IdempotencyKey.tenant_id == tenant, IdempotencyKey.route == route, IdempotencyKey.key == key)
             .with_for_update()
@@ -729,6 +736,7 @@ def refresh(request: Request, x: RefreshIn):
             )
             db.commit()
             raise HTTPException(401, "REFRESH_TOKEN_REUSE_DETECTED")
+        # User.id is globally unique; row.tenant_id is retained as defense-in-depth.
         user = db.scalar(select(User).where(User.id == row.user_id, User.tenant_id == row.tenant_id))
         if not user:
             raise HTTPException(401, "UNAUTHENTICATED") from None
@@ -762,8 +770,8 @@ def refresh(request: Request, x: RefreshIn):
 
 
 @app.post("/auth/logout")
-def logout(x: RefreshIn, authorization: str | None = Header(None)):
-    claims = auth(authorization)
+def logout(x: RefreshIn, request: Request):
+    claims = auth(request)
     exp = int(claims["exp"]) - int(datetime.now(UTC).timestamp())
     if rds and exp > 0:
         try:
@@ -934,6 +942,7 @@ def inventory(warehouse_id: str | None = None, product_id: str | None = None, lo
             q = q.where(Inventory.product_id == product_id)
         rows = []
         for i in db.scalars(q):
+            # Defense-in-depth for a corrupt cross-tenant inventory/product link.
             p = db.scalar(select(Product).where(Product.id == i.product_id, Product.tenant_id == c["tenant_id"]))
             available = i.on_hand - i.reserved
             if low_stock and p and available > p.reorder_point:
@@ -972,6 +981,7 @@ def adjust(x: AdjustIn, key: str | None = Header(None, alias="Idempotency-Key"),
             .where(
                 Inventory.warehouse_id == x.warehouse_id,
                 Inventory.product_id == x.product_id,
+                # Required defense-in-depth if a corrupt row has another tenant owner.
                 Inventory.tenant_id == c["tenant_id"],
             )
             .with_for_update()
@@ -1137,6 +1147,7 @@ def transition_po(po_id, target, roles, c, key=None):
                     .where(
                         Inventory.warehouse_id == po.warehouse_id,
                         Inventory.product_id == line.product_id,
+                        # Required defense-in-depth for corrupted cross-tenant rows.
                         Inventory.tenant_id == c["tenant_id"],
                     )
                     .with_for_update()
@@ -1160,6 +1171,7 @@ def transition_po(po_id, target, roles, c, key=None):
                     .where(
                         Inventory.warehouse_id == po.warehouse_id,
                         Inventory.product_id == line.product_id,
+                        # Required defense-in-depth for corrupted cross-tenant rows.
                         Inventory.tenant_id == c["tenant_id"],
                     )
                     .with_for_update()

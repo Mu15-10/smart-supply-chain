@@ -20,21 +20,56 @@ from app.main import (
     app,
 )
 
+GOLDEN_ROUTE_ROLES: dict[tuple[str, str], frozenset[str] | None] = {
+    ("GET", "/health/live"): None,
+    ("GET", "/health/ready"): None,
+    ("GET", "/health"): None,
+    ("GET", "/docs"): None,
+    ("GET", "/redoc"): None,
+    ("GET", "/openapi.json"): None,
+    ("GET", "/docs/oauth2-redirect"): None,
+    ("POST", "/auth/register"): None,
+    ("POST", "/auth/login"): None,
+    ("POST", "/auth/refresh"): None,
+    ("POST", "/auth/accept-invitation"): None,
+    ("POST", "/auth/logout"): frozenset({"authenticated"}),
+    ("POST", "/auth/invitations"): frozenset({"admin"}),
+    ("GET", "/suppliers"): frozenset({"admin", "purchasing", "inventory", "viewer"}),
+    ("POST", "/suppliers"): frozenset({"admin", "purchasing"}),
+    ("GET", "/products"): frozenset({"admin", "purchasing", "inventory", "viewer"}),
+    ("POST", "/products"): frozenset({"admin", "purchasing", "inventory"}),
+    ("GET", "/warehouses"): frozenset({"admin", "purchasing", "inventory", "viewer"}),
+    ("POST", "/warehouses"): frozenset({"admin", "inventory"}),
+    ("GET", "/inventory"): frozenset({"admin", "purchasing", "inventory", "viewer"}),
+    ("POST", "/inventory/adjust"): frozenset({"admin", "inventory"}),
+    ("GET", "/purchase-orders"): frozenset({"admin", "purchasing", "inventory", "viewer"}),
+    ("POST", "/purchase-orders"): frozenset({"admin", "purchasing"}),
+    ("POST", "/purchase-orders/{po_id}/submit"): frozenset({"admin", "purchasing"}),
+    ("POST", "/purchase-orders/{po_id}/approve"): frozenset({"admin"}),
+    ("POST", "/purchase-orders/{po_id}/receive"): frozenset({"admin", "inventory"}),
+}
 
-def test_every_registered_api_route_has_central_policy():
-    # Models policy enforcement inventory: every registered API route must have explicit metadata.
+
+def test_every_registered_method_path_has_central_policy_and_golden_entry():
+    # Models the owner-approved authorization contract; expected roles are handwritten, not derived from policy.py.
+    registered: set[tuple[str, str]] = set()
     for route in app.routes:
         if not isinstance(route, APIRoute):
             continue
-        policy = policy_for_route(route.path)
-        assert policy is not None, route.path
-        assert set(route.methods or ()) <= policy.methods | {"HEAD"}, route.path
         for method in route.methods or ():
-            if policy.access == "public":
-                assert (method, route.path) in PUBLIC_ROUTE_WHITELIST or method == "HEAD"
+            key = (method, route.path)
+            registered.add(key)
+            assert key in GOLDEN_ROUTE_ROLES, f"new route requires golden authorization decision: {key}"
+            policy = policy_for_route(method, route.path)
+            assert policy is not None
+            expected_roles = GOLDEN_ROUTE_ROLES[key]
+            if expected_roles is None:
+                assert policy.access == "public"
+                assert key in PUBLIC_ROUTE_WHITELIST
             else:
-                assert policy.requires_tenant, route.path
-                assert policy.roles, route.path
+                assert policy.requires_tenant
+                assert policy.roles == expected_roles
+    assert registered <= set(GOLDEN_ROUTE_ROLES)
 
 
 def test_metrics_is_an_explicit_allowlist_entry_but_not_a_registered_route():
