@@ -4,8 +4,8 @@
 
 - Phase: `1-c` — multi-tenant isolation and authorization hardening
 - Branch: `hardening/phase-0`
-- Status: `in progress; first policy/isolation unit closed locally`
-- Last verified commit: `4915c48`
+- Status: `in progress; second policy/isolation unit locally verified, pending GitHub CI and manager acceptance`
+- Last verified commit: `ca30cb6`
 
 ## Decisions
 
@@ -27,8 +27,9 @@
 - [done] Foundation CI published and green on `f6ab425`
 - [done] Local build baseline; load baseline remains open
 - [done] 1-b trusted proxy CIDR/XFF remediation, refresh-family logout/reuse hardening, and staging acceptance criteria
-- [doing] 1-c policy contracts, mass-assignment rejection, tenant isolation, nested BOLA, and tenant-scoped idempotency tests
-- [open] 1-c complete route matrix, Redis key audit, and PostgreSQL RLS decision
+- [done-local] 1-c central policy enforcement, generated route/role matrix, HTTP mass-assignment matrix, mixed-ownership BOLA, and mutation proof
+- [done-local] 1-c Redis/idempotency audit and RLS prototype with ADR-002 recommendation
+- [open] 1-c GitHub CI and written manager acceptance; no 1-d before approval
 
 ## Open decisions
 

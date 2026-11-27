@@ -1,48 +1,53 @@
-# تقرير المرحلة 1-ج — الوحدة الأولى: policy contracts وعزل tenants
 
-## الحالة
+## الوحدة الثانية — enforcement والمصفوفات والتدقيق
 
-أُغلقت هذه الوحدة التنفيذية محلياً فقط. لم تُغلق المرحلة 1-ج كاملة، ولم يُرفع commit جديد إلى GitHub بعد هذه الوحدة. لا يبدأ تقسيم `main.py` في هذه المرحلة.
+### policy enforcement كمصدر حقيقة مفروض
 
-## ما تم تنفيذه
+- `FastAPI` أصبح يركب dependency مركزية واحدة باسم `enforce_route_policy`.
+- dependency تستخرج path template وHTTP method من `request.scope["route"]`، ثم تقرأ `RoutePolicy` من `ROUTE_POLICY_TABLE`.
+- المسار العام يمر فقط إذا كان موجوداً في `PUBLIC_ROUTE_WHITELIST` عبر policy الجدول.
+- المسار المحمي يتطلب claims فيها `tenant_id`، ويفرض الأدوار المعلنة. الدور `authenticated` يعني أي token مصادق عليه، بينما الأدوار التشغيلية تطابق intersection صريحاً.
+- `validate_route_policy_table(app.routes)` يفشل الإقلاع إذا وجد route بلا policy أو method غير مغطى.
+- أزيلت فحوص `require_roles(...)` الموزعة من handlers؛ handlers المحمية تستخدم `auth`، والـdependency المركزية هي مصدر قرار الدور.
 
-### 1. جدول سياسات مركزي
+### المصفوفات المولّدة
 
-أُضيف `backend/app/core/policy.py` ويحتوي على:
+- مصفوفة authorization تُبنى من `app.routes`، وتدور آلياً على الأدوار `admin/purchasing/inventory/viewer` وحالتي owner/other-tenant. القرار 403 مشتق من policy؛ أما 404 للموارد التابعة فيثبت عبر اختبارات BOLA HTTP المنفصلة.
+- HTTP mass-assignment matrix تستخرج body routes من `app.routes` وتضيف كل حقل server-owned (`tenant_id`, `roles`, `status`, `id`, `is_active`, `version`) إلى الحالات. النتيجة الفعلية: **66 حالة passed** وكلها 422.
+- اختبارات BOLA تغطي كل معرّف nested منفرداً في inventory وPurchase Orders، مع supplier/product/warehouse مختلطين، وتثبت 404 موحداً وعدم وجود المعرف في body أو headers.
+- أُصلح الرد `PRODUCT_NOT_FOUND` إلى `RESOURCE_NOT_FOUND` بعد أن كشف اختبار BOLA أن الرد لم يكن موحداً.
 
-- `RoutePolicy` ثابتة لتوثيق methods والأدوار واشتراط tenant ونوع الوصول.
-- `ROUTE_POLICY_TABLE` للـroutes المسجلة حالياً.
-- `PUBLIC_ROUTE_WHITELIST` بقائمة صريحة تشمل `/health` ومسارات readiness/live، و`/metrics` كمدخل محجوز صريح غير مسجل في FastAPI، إضافة إلى مسارات التوثيق العامة والمسارات العامة للمصادقة.
-- اختبار يمر على كل `APIRoute` مسجل ويتحقق من وجود policy متطابقة وعدم وجود route عام خارج القائمة.
+### إثبات mutation
 
-### 2. منع mass assignment
+شُغّل `scripts/mutation_tenant_queries.py` على PostgreSQL. السكربت يزيل tenant predicate واحداً في كل مرة، يشغل `tests/test_phase1c_isolation.py`، ثم يعيد الملف إلى حالته الأصلية في `finally`.
 
-أصبحت نماذج الإدخال ترث `StrictInputModel` ذي `ConfigDict(extra="forbid")`. أضيفت حالات اختبار تقدم حقولاً مملوكة للخادم مثل `tenant_id` و`roles` و`status` و`id`، وتتوقع `ValidationError` بدلاً من تجاهل الحقول أو تمريرها.
+| الاستعلام/الموضع | هل فشل اختبار؟ |
+|---|---|
+| supplier list tenant predicate | نعم — `FAIL_DETECTED` |
+| product list tenant predicate | نعم — `FAIL_DETECTED` |
+| warehouse list tenant predicate | نعم — `FAIL_DETECTED` |
+| purchase-order list tenant predicate | نعم — `FAIL_DETECTED` |
+| inventory adjust product predicate | نعم — `FAIL_DETECTED` |
+| inventory adjust warehouse predicate | نعم — `FAIL_DETECTED` |
+| purchase-order supplier predicate | نعم — `FAIL_DETECTED` |
+| purchase-order warehouse predicate | نعم — `FAIL_DETECTED` |
+| purchase-order transition predicate | نعم — `FAIL_DETECTED` |
 
-### 3. عزل tenants وBOLA
+النتيجة: **9/9 mutations detected**. ظهرت فجوتان أثناء التدقيق، ثم أضيفت حالات mixed-ownership التي جعلت كل mutation يفشل اختباراً واحداً على الأقل.
 
-أضيفت `backend/tests/test_phase1c_isolation.py` وتثبت على PostgreSQL:
+### Redis وIdempotency
 
-- قوائم suppliers/products/warehouses/purchase-orders لا تُظهر موارد tenant آخر.
-- محاولة تعديل inventory باستخدام warehouse/product من tenant آخر تعيد 404.
-- محاولة إنشاء Purchase Order بعناصر nested مملوكة لـtenant آخر تعيد 404.
-- tenant آخر لا يستطيع تنفيذ transition على Purchase Order لا يملكه، وتكون النتيجة 404.
-- نفس `Idempotency-Key` لا يتداخل بين tenantين مختلفين على inventory adjustment.
+الجرد الكامل موثق في [REDIS-TENANT-AUDIT.md](REDIS-TENANT-AUDIT.md). المفاتيح قبل authentication أو الخاصة بـ`jti` معلّمة صراحة كعامة مقصودة؛ لا توجد Redis caches لموارد tenant. `IdempotencyKey` يستخدم `(tenant_id, route, key)` في ORM والاستعلامات، وPostgreSQL inspector أثبت `uq_idem_tenant_route_key`. اختبار تزامني لنفس المفتاح من tenantين أعاد `201, 201`.
 
-كل اختبار يوضح في تعليق السلوك الخارجي الذي ينمذجه. اختبارات BOLA صممت لتفشل على كود لا يطبق tenant ownership predicate، ولا تعدّل الاختبارات لتناسب نتيجة التطبيق.
+### ADR-002 وRLS prototype
 
-## الـcommits
+- [ADR-002-postgresql-rls.md](adr/ADR-002-postgresql-rls.md) يقترح **رفض التفعيل الشامل حالياً** مع إبقاء RLS مرشحاً لـdefense-in-depth.
+- `scripts/rls_prototype.sql` شُغّل فعلياً على جدولين تجريبيين، 10,000 صف لكل جدول، دور `NOSUPERUSER NOBYPASSRLS` غير مالك، `FORCE RLS`، و`SET LOCAL` داخل transaction.
+- `tenant-a` و`tenant-b` رأى كل منهما 5000 صف فقط في كل جدول.
+- قياس EXPLAIN ANALYZE في تشغيل واحد لم يثبت overhead سلبياً؛ الفرق لا يكفي لقرار أداء نهائي، ويحتاج benchmark متكرر تحت staging load.
+- لم يُطبق RLS على جداول التطبيق ولم تُضف migration إنتاجية.
 
-| التغيير | commit | النتيجة |
-|---|---|---|
-| policy contracts وStrictInputModel واختبارات policy/mass assignment | `193bb9f` | جدول سياسات مركزي واختبارات تغطية ورفض الحقول الإضافية. |
-| اختبارات tenant isolation وnested BOLA وidempotency isolation | `4915c48` | اختبارات عزل مستقلة، محفوظة في commit مستقل. |
-
-تم التحقق من النوعين عبر `git cat-file -t`: النتيجة `commit`.
-
-## الأدلة الفعلية
-
-بيئة التشغيل:
+## أدلة التحقق المحدثة
 
 ```text
 TEST_DATABASE_URL=postgresql+psycopg://supply_ci:supply_ci@127.0.0.1:5432/supply_ci
@@ -50,37 +55,32 @@ REDIS_URL=redis://127.0.0.1:6379/15
 [test-bootstrap] database dialect: postgresql
 ```
 
-النتائج:
-
-- `pytest -s -q tests/test_phase1c_isolation.py`: **3 passed, 1 warning**.
-- `pytest -s -q -rs`: **69 passed, 1 warning**.
+- `pytest -s -q -rs`: **150 passed, 1 warning**.
+- `tests/test_phase1c_isolation.py`: **5 passed, 1 warning**.
+- HTTP mass-assignment matrix: **66 passed, 1 warning**.
 - `ruff check .`: **All checks passed**.
-- `ruff format --check .`: **21 files already formatted**.
+- `ruff format --check .`: **23 files already formatted**.
 - `mypy app --ignore-missing-imports`: **Success: no issues found in 4 source files**.
+- mutation audit: **9/9 FAIL_DETECTED**.
+- RLS prototype: نجح تشغيل PostgreSQL الفعلي، ثم حُذف schema والأدوار التجريبية.
 
-التحذير الوحيد هو `DeprecationWarning` من اعتماد `passlib` على وحدة `crypt`، وليس فشلاً في الاختبارات.
+## Commits الجديدة
 
-## ما لم يُنفذ بعد
+| التغيير | commit | النتيجة |
+|---|---|---|
+| central policy enforcement | `00a110d` | dependency مركزية، fail-closed route validation، وإزالة role checks المكررة. |
+| BOLA/mixed ownership وresponse موحد | `cd7b41e` | 404 موحد واختبارات nested identifiers والتزامن. |
+| authorization وmass-assignment matrices | `b63a21d` | مصفوفات مولّدة من routes، 66 حالة HTTP. |
+| Redis audit وRLS prototype وmutation tool | `ca30cb6` | جرد المفاتيح، ADR-002، و9/9 mutation detection. |
 
-- لم تُستكمل مصفوفة 100% لكل route مع مقارنة آلية بين routes FastAPI وpolicy metadata، بما في ذلك أي حالات method/path إضافية تظهر أثناء التوسع.
-- لم يُنفذ تدقيق كامل لمفاتيح Redis/idempotency في كل endpoints للتأكد من وجود `tenant_id` وعدم وجود key collision خارج الحالات المختبرة.
-- لم يُتخذ قرار PostgreSQL RLS ولم يُكتب ADR الخاص به.
-- لم يُفصل `main.py` إلى modules.
-- لم يُشغّل CI على GitHub لهذه commits ولم تُثبت نتيجة remote بعد.
-- لم تُنفذ load test أو backup/restore أو monitoring production.
+## الحالة والبوابة
 
-## المخاطر
+الوحدة الثانية جاهزة للمراجعة المحلية وليست مقبولة نهائياً بعد. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` لم تُرفع بعد في لحظة كتابة هذا القسم. بعد الدفع يلزم CI أخضر على GitHub لنفس SHA، ثم مراجعة المدير. لا يبدأ 1-د قبل الموافقة الكتابية.
 
-- جدول policy الحالي هو metadata contract واختبار inventory، وليس بعد middleware مركزي يفرض كل policy تلقائياً؛ enforcement ما زال موزعاً في handlers الحالية.
-- اختبار idempotency الحالي يغطي endpoint inventory adjustment فقط؛ يلزم تدقيق باقي المسارات قبل اعتبار العزل شاملاً.
-- الاعتماد على 404 في BOLA يحافظ على عدم كشف وجود المورد، لكن يلزم مراجعة response shapes الحالية عند توسيع التغطية.
+## مخاطر مفتوحة
 
-## بوابة الإغلاق التالية
-
-لا تُعتبر 1-ج مكتملة قبل:
-
-1. إكمال route matrix لكل المسارات والـmethods المسجلة.
-2. تدقيق tenant-specific Redis keys وidempotency في كامل التطبيق.
-3. قرار موثق لـPostgreSQL RLS مع حدود تطبيقه وعدم كسر API الحالي.
-4. تشغيل الاختبارات والفحوصات نفسها في CI أخضر على PostgreSQL/Redis.
-5. تقرير قبول مستقل يحدد ما تم التحقق منه وما بقي مفتوحاً.
+- matrix الحالية مشتقة من routes الموجودة حالياً؛ routes جديدة ستفشل `validate_route_policy_table` لكنها تحتاج أيضاً payload/BOLA contract في الاختبارات.
+- resource ownership لا يمكن حسمه من route dependency وحدها؛ لذلك يبقى query predicate وBOLA HTTP اختباراً إلزامياً.
+- مفاتيح rate-limit العامة قبل authentication مقصودة، لكن إضافة أي Redis cache جديدة تتطلب تحديث الجرد.
+- RLS prototype ليس benchmark production وليس تفويضاً لتطبيق RLS على schema الحالي.
+- warning `passlib/crypt` غير حاجب لكنه يحتاج خطة hashing في 1-د.
