@@ -75,7 +75,15 @@ REDIS_URL=redis://127.0.0.1:6379/15
 
 ## الحالة والبوابة
 
-الوحدة الثانية جاهزة للمراجعة المحلية وليست مقبولة نهائياً بعد. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` لم تُرفع بعد في لحظة كتابة هذا القسم. بعد الدفع يلزم CI أخضر على GitHub لنفس SHA، ثم مراجعة المدير. لا يبدأ 1-د قبل الموافقة الكتابية.
+الوحدة الثانية جاهزة للمراجعة المحلية والبعيدة، وليست مقبولة نهائياً من المدير بعد. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`8c7f7c7` رُفعت إلى `hardening/phase-0`. لا يبدأ 1-د قبل الموافقة الكتابية.
+
+## CI البعيد
+
+- [Foundation CI #46024088025](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46024088025) على SHA `8c7f7c797ba74b43710417bf8e23578c457fd05d`: **success**.
+- `backend`: success — PostgreSQL/Redis، pytest، Ruff، format، mypy، وAlembic round-trip/check.
+- `semgrep`: success — `semgrep==1.186.0` مع `p/python` و`p/security-audit`.
+- `frontend`, `container`, `dependency-audit`, و`secrets`: success.
+- ظهرت annotations غير حاجبة من GitHub حول إجبار بعض actions التي تستهدف Node.js 20 على Node.js 24؛ لم يفشل أي job بسببها.
 
 ## مخاطر مفتوحة
 

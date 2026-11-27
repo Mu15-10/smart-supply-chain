@@ -4,8 +4,8 @@
 
 - Phase: `1-c` — multi-tenant isolation and authorization hardening
 - Branch: `hardening/phase-0`
-- Status: `in progress; second policy/isolation unit locally verified, pending GitHub CI and manager acceptance`
-- Last verified commit: `ca30cb6`
+- Status: `in progress; phase 1-c technically verified locally and on GitHub, pending written manager acceptance`
+- Last verified commit: `8c7f7c7`
 
 ## Decisions
 
@@ -29,7 +29,8 @@
 - [done] 1-b trusted proxy CIDR/XFF remediation, refresh-family logout/reuse hardening, and staging acceptance criteria
 - [done-local] 1-c central policy enforcement, generated route/role matrix, HTTP mass-assignment matrix, mixed-ownership BOLA, and mutation proof
 - [done-local] 1-c Redis/idempotency audit and RLS prototype with ADR-002 recommendation
-- [open] 1-c GitHub CI and written manager acceptance; no 1-d before approval
+- [done-verified] 1-c GitHub CI green on `8c7f7c7` (run `46024088025`)
+- [open] 1-c written manager acceptance; no 1-d before approval
 
 ## Open decisions
 
