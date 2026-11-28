@@ -83,15 +83,16 @@ REDIS_URL=redis://127.0.0.1:6379/15
 | Redis audit وRLS prototype وmutation tool | `ca30cb6` | جرد المفاتيح، ADR-002، و9/9 mutation detection. |
 | method/path policy وauth cache وGET inventory tests | `94a7a9e` | إصلاح regression، golden مستقل، عزل GET inventory، وإثبات auth مرة واحدة. |
 | AST manifest/guard | `13bc19e` | guard سريع/ليلي سابق على G1. |
-| G1 corruption/HTTP tests | commit G1 اللاحق | DB-corruption يغلق survivors، وHTTP role lifecycle matrix. |
+| G1 corruption/HTTP tests وmanifest | `0814d87` | DB-corruption يغلق survivors، وHTTP role lifecycle matrix، وmanifest ملتزم. |
+| deterministic corruption assertion | `90773c2` | إزالة تطابق نصي غير حتمي مع UUID من اختبار reorder-point. |
 
 ## الحالة والبوابة
 
-الوحدة الثانية وملحق G1 جاهزان للمراجعة المحلية والبعيدة، والبدء بـ1-د ما زال مقفلاً حتى رابط CI أخضر على آخر commit وثلاثة تشغيلات متتالية ناجحة. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`94a7a9e` و`13bc19e` مرفوعة إلى `hardening/phase-0`.
+الوحدة الثانية وملحق G1 مغلقان تقنياً، والبدء بـ1-د يظل مشروطاً بموافقة المدير الكتابية. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`94a7a9e` و`13bc19e` و`0814d87` و`90773c2` مرفوعة إلى `hardening/phase-0`.
 
 ## CI البعيد
 
-- [Foundation CI #46076564913](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46076564913) على SHA `13bc19e04305d72dae3cc739d55f4fe866ca0d45`: **success**.
+- [Foundation CI #46162681835](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46162681835) على SHA `90773c2b52fb8a4f6df759ff084ea3e5eff8db96`: **success** بعد ثلاث تشغيلات متتالية على نفس SHA.
 - `backend`: success — PostgreSQL/Redis، pytest، Ruff، format، mypy، وAlembic round-trip/check.
 - `semgrep`: success — `semgrep==1.186.0` مع `p/python` و`p/security-audit`.
 - `frontend`, `container`, `dependency-audit`, و`secrets`: success.
