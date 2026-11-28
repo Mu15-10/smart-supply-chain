@@ -1,0 +1,128 @@
+[
+  {
+    "id": "backend/app/main.py::claim_idem::1",
+    "path": "backend/app/main.py",
+    "function": "claim_idem",
+    "ordinal": 1,
+    "expression": "IdempotencyKey.tenant_id == tenant"
+  },
+  {
+    "id": "backend/app/main.py::claim_idem::2",
+    "path": "backend/app/main.py",
+    "function": "claim_idem",
+    "ordinal": 2,
+    "expression": "IdempotencyKey.tenant_id == tenant"
+  },
+  {
+    "id": "backend/app/main.py::refresh::1",
+    "path": "backend/app/main.py",
+    "function": "refresh",
+    "ordinal": 1,
+    "expression": "User.tenant_id == row.tenant_id"
+  },
+  {
+    "id": "backend/app/main.py::suppliers::1",
+    "path": "backend/app/main.py",
+    "function": "suppliers",
+    "ordinal": 1,
+    "expression": "Supplier.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::products::1",
+    "path": "backend/app/main.py",
+    "function": "products",
+    "ordinal": 1,
+    "expression": "Product.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::warehouses::1",
+    "path": "backend/app/main.py",
+    "function": "warehouses",
+    "ordinal": 1,
+    "expression": "Warehouse.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::inventory::1",
+    "path": "backend/app/main.py",
+    "function": "inventory",
+    "ordinal": 1,
+    "expression": "Inventory.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::inventory::2",
+    "path": "backend/app/main.py",
+    "function": "inventory",
+    "ordinal": 2,
+    "expression": "Product.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::adjust::1",
+    "path": "backend/app/main.py",
+    "function": "adjust",
+    "ordinal": 1,
+    "expression": "Product.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::adjust::2",
+    "path": "backend/app/main.py",
+    "function": "adjust",
+    "ordinal": 2,
+    "expression": "Warehouse.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::adjust::3",
+    "path": "backend/app/main.py",
+    "function": "adjust",
+    "ordinal": 3,
+    "expression": "Inventory.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::create_po::1",
+    "path": "backend/app/main.py",
+    "function": "create_po",
+    "ordinal": 1,
+    "expression": "Supplier.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::create_po::2",
+    "path": "backend/app/main.py",
+    "function": "create_po",
+    "ordinal": 2,
+    "expression": "Warehouse.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::create_po::3",
+    "path": "backend/app/main.py",
+    "function": "create_po",
+    "ordinal": 3,
+    "expression": "Product.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::list_po::1",
+    "path": "backend/app/main.py",
+    "function": "list_po",
+    "ordinal": 1,
+    "expression": "PurchaseOrder.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::transition_po::1",
+    "path": "backend/app/main.py",
+    "function": "transition_po",
+    "ordinal": 1,
+    "expression": "PurchaseOrder.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::transition_po::2",
+    "path": "backend/app/main.py",
+    "function": "transition_po",
+    "ordinal": 2,
+    "expression": "Inventory.tenant_id == c[\"tenant_id\"]"
+  },
+  {
+    "id": "backend/app/main.py::transition_po::3",
+    "path": "backend/app/main.py",
+    "function": "transition_po",
+    "ordinal": 3,
+    "expression": "Inventory.tenant_id == c[\"tenant_id\"]"
+  }
+]

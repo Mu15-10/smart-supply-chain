@@ -14,6 +14,12 @@
 - `validate_route_policy_table(app.routes)` يفشل الإقلاع إذا وجد route بلا policy أو method غير مغطى.
 - أزيلت فحوص `require_roles(...)` الموزعة من handlers؛ handlers المحمية تستخدم `auth`، والـdependency المركزية هي مصدر قرار الدور.
 
+### بنود G1 قبل 1-د
+
+- أضيفت أربع اختبارات PostgreSQL مباشرة لفساد `inventory_balances`: reorder-point في GET inventory، وadjust، وapprove، وreceive. النتيجة **4/4 passed**، وتحولت كل test-gap survivors إلى `FAIL_DETECTED`.
+- هوية mutation أصبحت `(file, enclosing function, ordinal)`، والـmanifest الملتزم يحتوي **18/18** target. اختبار endpoint وهمي يعيد نفس التعبير يفشل الـguard، و`tenant-manifest-guard` يعمل على كل PR.
+- أضيفت مصفوفة HTTP حقيقية: admin ينشئ invitation لكل role، ثم accept، ثم login، ثم تُستدعى كل `(method, path)` عبر JWT فعلي وتقارن بالـgolden. النتيجة **1 passed** بلا mismatch.
+
 ### المصفوفات المولّدة
 
 - مصفوفة authorization تُبنى من `app.routes`، وتدور آلياً على الأدوار `admin/purchasing/inventory/viewer` وحالتي owner/other-tenant. القرار 403 مشتق من policy؛ أما 404 للموارد التابعة فيثبت عبر اختبارات BOLA HTTP المنفصلة.
@@ -27,15 +33,11 @@
 
 | الاستعلام/الموضع | هل فشل اختبار؟ |
 |---|---|
-| AST-discovered comparison | النتيجة |
-|---|---|
-| 12 موضعاً تغطيها اختبارات العزل | `FAIL_DETECTED` |
-| `User.tenant_id == row.tenant_id` في refresh | survivor مصنف equivalent: `User.id` PK عالمي والـ row يحمل tenant |
-| `Product.tenant_id == c["tenant_id"]` في GET inventory | survivor مصنف test gap: لا توجد fixture فساد product/inventory عابر للـ tenant |
-| `Inventory.tenant_id == c["tenant_id"]` في adjust/approve/receive | survivors مصنفة test gap: لا توجد fixtures لصفوف inventory فاسدة بمالك مختلف |
-| tenant predicate في مسار IntegrityError لـ idempotency | survivor مصنف equivalent بعد `uq_idem_tenant_route_key` |
+| 16 predicates | `FAIL_DETECTED` |
+| `User.tenant_id == row.tenant_id` في refresh | `equivalent`: `User.id` PK عالمي والـ row يحمل tenant |
+| tenant predicate في مسار IntegrityError لـ idempotency | `equivalent`: القيد `uq_idem_tenant_route_key` يضمن العزل |
 
-النتيجة: **18 موضعاً AST مكتشفاً**؛ 12 موضعاً فشل اختبارها، و6 survivors صُنّفت صراحةً (2 equivalent و4 مواضع test-gap مكررة على تعبيرين). التفاصيل والدليل في [TENANT-MUTATION-AUDIT.md](TENANT-MUTATION-AUDIT.md). guard يفشل لأي target غير مختبر أو غير مصنف.
+النتيجة النهائية: **18 موضعاً AST مكتشفاً؛ 16 `FAIL_DETECTED` و2 `equivalent` مصنّفان ومبرّران**. لم يبق أي `test-gap`. التفاصيل والدليل في [TENANT-MUTATION-AUDIT.md](TENANT-MUTATION-AUDIT.md). guard يفشل لأي target غير مختبر أو غير مصنف.
 
 ### Redis وIdempotency
 
@@ -57,7 +59,7 @@ REDIS_URL=redis://127.0.0.1:6379/15
 [test-bootstrap] database dialect: postgresql
 ```
 
-- `pytest -s -q -rs`: **152 passed, 1 warning** على PostgreSQL/Redis، مع header `test database dialect: postgresql`.
+- `pytest -s -q -rs`: **158 passed, 1 warning** على PostgreSQL/Redis، مع header `test database dialect: postgresql`.
 - `tests/test_phase1c_isolation.py`: **5 passed, 1 warning**.
 - policy/enforcement regression suite بعد الإصلاح: **27 passed، 1 warning**.
 - policy/enforcement/isolation targeted suite بعد الإصلاح: **32 passed، 1 warning**.
@@ -65,9 +67,11 @@ REDIS_URL=redis://127.0.0.1:6379/15
 - `ruff check .`: **All checks passed**.
 - `ruff format --check backend scripts`: **24 files already formatted**.
 - `mypy app --ignore-missing-imports`: **Success: no issues found in 4 source files**.
-- mutation audit AST: **18 positions discovered، 12 FAIL_DETECTED، و6 survivors classified؛ guard exit code 0**.
+- `mutation audit AST`: **18 positions discovered، 16 FAIL_DETECTED، و2 equivalent classified؛ guard exit code 0**.
 - auth cache: protected `/suppliers` request أثبت `jwt.decode` مرة واحدة، مع إعادة استخدام `request.state.auth_claims`.
 - RLS prototype: نجح تشغيل PostgreSQL الفعلي، ثم حُذف schema والأدوار التجريبية.
+- Alembic round-trip/check: **نجح** مع `DATABASE_URL` و`JWT_SECRET` و`ENVIRONMENT=test` مطابقة لبيئة CI.
+- G1 mutation بعد DB-corruption: **18 discovered، 16 FAIL_DETECTED، 2 equivalent classified، exit code 0**.
 
 ## Commits الجديدة
 
@@ -77,21 +81,17 @@ REDIS_URL=redis://127.0.0.1:6379/15
 | BOLA/mixed ownership وresponse موحد | `cd7b41e` | 404 موحد واختبارات nested identifiers والتزامن. |
 | authorization وmass-assignment matrices | `b63a21d` | مصفوفات مولّدة من routes، 66 حالة HTTP. |
 | Redis audit وRLS prototype وmutation tool | `ca30cb6` | جرد المفاتيح، ADR-002، و9/9 mutation detection. |
-
-### تغييرات المراجعة الحالية غير committed بعد
-
-- method/path policy وgolden authorization مستقل.
-- GET inventory cross-tenant filters.
-- AST mutation discovery/classification وCI scheduled/manual guard.
-- auth verification call-count regression test.
+| method/path policy وauth cache وGET inventory tests | `94a7a9e` | إصلاح regression، golden مستقل، عزل GET inventory، وإثبات auth مرة واحدة. |
+| AST manifest/guard | `13bc19e` | guard سريع/ليلي سابق على G1. |
+| G1 corruption/HTTP tests | commit G1 اللاحق | DB-corruption يغلق survivors، وHTTP role lifecycle matrix. |
 
 ## الحالة والبوابة
 
-الوحدة الثانية جاهزة للمراجعة المحلية والبعيدة، وليست مقبولة نهائياً من المدير بعد. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`8c7f7c7` رُفعت إلى `hardening/phase-0`. لا يبدأ 1-د قبل الموافقة الكتابية.
+الوحدة الثانية وملحق G1 جاهزان للمراجعة المحلية والبعيدة، والبدء بـ1-د ما زال مقفلاً حتى رابط CI أخضر على آخر commit وثلاثة تشغيلات متتالية ناجحة. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`94a7a9e` و`13bc19e` مرفوعة إلى `hardening/phase-0`.
 
 ## CI البعيد
 
-- [Foundation CI #46024088025](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46024088025) على SHA `8c7f7c797ba74b43710417bf8e23578c457fd05d`: **success**.
+- [Foundation CI #46076564913](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46076564913) على SHA `13bc19e04305d72dae3cc739d55f4fe866ca0d45`: **success**.
 - `backend`: success — PostgreSQL/Redis، pytest، Ruff، format، mypy، وAlembic round-trip/check.
 - `semgrep`: success — `semgrep==1.186.0` مع `p/python` و`p/security-audit`.
 - `frontend`, `container`, `dependency-audit`, و`secrets`: success.

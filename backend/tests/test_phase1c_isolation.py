@@ -4,7 +4,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from app.main import app, engine
 
@@ -251,6 +251,168 @@ def test_inventory_get_filters_do_not_cross_tenant_or_leak_counts():
     )
     assert own_response.status_code == 200
     assert own_response.json()["data"] == []
+
+
+def test_corrupt_inventory_product_owner_cannot_leak_reorder_point():
+    # Models a PostgreSQL data-corruption incident: inventory belongs to tenant A but points
+    # at tenant B's product. The source is the owner-approved GET inventory isolation contract.
+    tenant_a, tokens_a = _register("corrupt-get-a")
+    _, tokens_b = _register("corrupt-get-b")
+    resources_a = _resources(tokens_a, "corrupt-get-a")
+    resources_b = _resources(tokens_b, "corrupt-get-b")
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE products SET reorder_point = 10 WHERE id = :product_id"),
+            {"product_id": resources_b["product"]["id"]},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_balances "
+                "(warehouse_id, product_id, tenant_id, on_hand, reserved, on_order, updated_at) "
+                "VALUES (:warehouse_id, :product_id, :tenant_id, 0, 0, 0, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_b["product"]["id"],
+                "tenant_id": tenant_a,
+            },
+        )
+    response = client.get(
+        "/inventory",
+        params={"warehouse_id": resources_a["warehouse"]["id"], "product_id": resources_b["product"]["id"]},
+        headers=_headers(tokens_a),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == [
+        {
+            "warehouseId": resources_a["warehouse"]["id"],
+            "productId": resources_b["product"]["id"],
+            "onHand": "0.0000",
+            "reserved": "0.0000",
+            "available": "0.0000",
+            "onOrder": "0.0000",
+            "reorderPoint": "0",
+        }
+    ]
+    assert "10" not in response.text
+
+
+def test_corrupt_inventory_adjust_cannot_update_other_tenant_row():
+    # Models direct PostgreSQL corruption before an authenticated inventory adjustment;
+    # the tenant predicate must prevent updating the corrupt owner's balance.
+    _, tokens_a = _register("corrupt-adjust-a")
+    resources_a = _resources(tokens_a, "corrupt-adjust-a")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_balances "
+                "(warehouse_id, product_id, tenant_id, on_hand, reserved, on_order, updated_at) "
+                "VALUES (:warehouse_id, :product_id, :tenant_id, 4, 0, 0, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_a["product"]["id"],
+                "tenant_id": "corrupt-owner-adjust",
+            },
+        )
+    response = client.post(
+        "/inventory/adjust",
+        headers=_headers(tokens_a, "corrupt-adjust-key"),
+        json={
+            "warehouse_id": resources_a["warehouse"]["id"],
+            "product_id": resources_a["product"]["id"],
+            "quantity": "3",
+        },
+    )
+    assert response.status_code == 409, response.text
+    with engine.connect() as connection:
+        balance = connection.execute(
+            text(
+                "SELECT on_hand FROM inventory_balances "
+                "WHERE warehouse_id = :warehouse_id AND product_id = :product_id AND tenant_id = :tenant_id"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_a["product"]["id"],
+                "tenant_id": "corrupt-owner-adjust",
+            },
+        ).one()
+    assert str(balance.on_hand) == "4.0000"
+
+
+def test_corrupt_inventory_approve_cannot_update_other_tenant_row():
+    # Models direct corruption before PO approval; approve must create/update only tenant A's inventory.
+    _, tokens_a = _register("corrupt-approve-a")
+    resources_a = _resources(tokens_a, "corrupt-approve-a")
+    po = _create_po(tokens_a, resources_a, "corrupt-approve-po")
+    submitted = client.post(f"/purchase-orders/{po['id']}/submit", headers=_headers(tokens_a))
+    assert submitted.status_code == 200, submitted.text
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_balances "
+                "(warehouse_id, product_id, tenant_id, on_hand, reserved, on_order, updated_at) "
+                "VALUES (:warehouse_id, :product_id, :tenant_id, 0, 0, 0, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_a["product"]["id"],
+                "tenant_id": "corrupt-owner-approve",
+            },
+        )
+    approved = client.post(f"/purchase-orders/{po['id']}/approve", headers=_headers(tokens_a))
+    assert approved.status_code == 409, approved.text
+    with engine.connect() as connection:
+        balance = connection.execute(
+            text(
+                "SELECT on_order FROM inventory_balances "
+                "WHERE warehouse_id = :warehouse_id AND product_id = :product_id AND tenant_id = :tenant_id"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_a["product"]["id"],
+                "tenant_id": "corrupt-owner-approve",
+            },
+        ).one()
+    assert str(balance.on_order) == "0.0000"
+
+
+def test_corrupt_inventory_receive_cannot_update_other_tenant_row():
+    # Models direct corruption before PO receipt; a corrupt owner's on_order balance must not authorize receipt.
+    _, tokens_a = _register("corrupt-receive-a")
+    resources_a = _resources(tokens_a, "corrupt-receive-a")
+    po = _create_po(tokens_a, resources_a, "corrupt-receive-po")
+    submitted = client.post(f"/purchase-orders/{po['id']}/submit", headers=_headers(tokens_a))
+    assert submitted.status_code == 200, submitted.text
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE purchase_orders SET status = 'approved' WHERE id = :id"), {"id": po["id"]})
+        connection.execute(
+            text(
+                "INSERT INTO inventory_balances "
+                "(warehouse_id, product_id, tenant_id, on_hand, reserved, on_order, updated_at) "
+                "VALUES (:warehouse_id, :product_id, :tenant_id, 0, 0, 2, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_a["product"]["id"],
+                "tenant_id": "corrupt-owner-receive",
+            },
+        )
+    received = client.post(f"/purchase-orders/{po['id']}/receive", headers=_headers(tokens_a))
+    assert received.status_code == 409, received.text
+    with engine.connect() as connection:
+        balance = connection.execute(
+            text(
+                "SELECT on_hand, on_order FROM inventory_balances "
+                "WHERE warehouse_id = :warehouse_id AND product_id = :product_id AND tenant_id = :tenant_id"
+            ),
+            {
+                "warehouse_id": resources_a["warehouse"]["id"],
+                "product_id": resources_a["product"]["id"],
+                "tenant_id": "corrupt-owner-receive",
+            },
+        ).one()
+    assert (str(balance.on_hand), str(balance.on_order)) == ("0.0000", "2.0000")
 
 
 def test_same_idempotency_key_isolated_by_tenant():

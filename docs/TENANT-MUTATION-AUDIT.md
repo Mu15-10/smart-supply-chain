@@ -1,30 +1,37 @@
-# تدقيق tenant predicates بالـ AST
+# تدقيق tenant predicates بالـAST
 
 ## المنهج
 
-تكتشف `scripts/mutation_tenant_queries.py` كل عقدة AST من نوع `Compare` تحتوي على `.tenant_id` تحت `backend/app`. لكل موضع تُنشأ نسخة مؤقتة من المستودع ويُستبدل التعبير بـ`True`، ثم تُشغّل `tests/test_phase1c_isolation.py`. فشل الاختبار أو فشل الاستيراد/الترجمة يعني أن الـ mutant اكتُشف. لا يُعدَّل working tree الأصلي، ويعيد السكربت guard يفشل إذا لم يكن كل target مختبراً أو مصنفاً.
+تكتشف `scripts/mutation_tenant_queries.py` كل مقارنة AST تحتوي `.tenant_id` تحت `backend/app`. هوية كل target مستقرة ومكوّنة من `(الملف، الدالة المحيطة، رقم ترتيب التعبير داخل الدالة)`، وليست من hash التعبير؛ لذلك لا يمكن لموضع جديد أن يرث تصنيف موضع قديم. القائمة الكاملة ملتزمة في [tenant_predicate_manifest.json](../scripts/tenant_predicate_manifest.json).
 
-التشغيل الفعلي:
+يوجد guard سريع `--guard-only` يعمل على كل push وpull request، ويقارن الاكتشاف الحالي بالـmanifest وبالتصنيفات. كما يوجد اختبار يضيف endpoint وهمياً بنفس expression ويثبت أن guard يرفضه. التشغيل الكامل ينشئ نسخة مؤقتة لكل mutant ويستبدل predicate بـ`True` ثم يشغّل اختبارات العزل؛ لا يعدّل working tree الأصلي.
+
+## التشغيل الفعلي بعد إغلاق G1
 
 ```text
 TEST_DATABASE_URL=postgresql+psycopg://supply_ci:supply_ci@127.0.0.1:5432/supply_ci
 REDIS_URL=redis://127.0.0.1:6379/15
-python scripts/mutation_tenant_queries.py --json /tmp/tenant-mutation-results.json
+python scripts/mutation_tenant_queries.py --json /tmp/tenant-mutation-g1.json
 ```
 
-النتيجة الفعلية: **18 موضعاً مكتشفاً، 12 موضعاً فشل اختباره، و6 survivors مصنفين**. توجد 7 تعبيرات mutant فريدة لأن بعض المواضع تستخدم التعبير نفسه؛ لذلك يظهر ملخص guard الفريد `discovered=7 tested=6 classified=4`، مع بقاء كل المواضع الـ18 ممثلة في النتائج.
+النتيجة الفعلية: **18 target مكتشفاً، 16 `FAIL_DETECTED`، و2 survivors مصنفين equivalent**. لم يبق أي `test-gap`؛ اختبارات DB-corruption المباشرة تستخدم PostgreSQL SQL لإدراج صفوف inventory بمالك مختلف، وتثبت عدم تحديث الصف الفاسد وعدم تسريب reorder point.
 
-## التصنيف
+| target | النتيجة | التصنيف/الدليل |
+|---|---|---|
+| `backend/app/main.py::refresh::1` | survivor | equivalent: `User.id` مفتاح أساسي عالمي، و`row.tenant_id` tenant الخاص بالـrefresh row. |
+| `backend/app/main.py::claim_idem::2` | survivor | equivalent بعد `uq_idem_tenant_route_key`: تعارض الإدراج لا يمكن أن يأتي من tenant آخر. |
+| بقية 16 target | `FAIL_DETECTED` | تشمل GET inventory reorder-point، adjust، approve، receive، القوائم، PO، وidempotency predicate الأول. |
 
-| التعبير | المواضع | التصنيف | الدليل/الفجوة |
-|---|---:|---|---|
-| `User.tenant_id == row.tenant_id` | 737 | equivalent | `User.id` مفتاح أساسي عالمي، و`row.tenant_id` هو tenant الخاص بالـ refresh token المحدد؛ بعد اختيار `row` لا يمكن أن يطابق `user_id` مستخدماً من tenant آخر ضمن invariant المخطط. |
-| `Product.tenant_id == c["tenant_id"]` | 942 | test gap | suite الحالي لا ينشئ inventory row فاسداً يشير إلى product من tenant آخر. predicate باقٍ كـ defense-in-depth، ويجب إضافة fixture فساد مقصود وإثبات عدم تسريب reorder point. |
-| `Inventory.tenant_id == c["tenant_id"]` | 980، 1145، 1168 | test gap | suite الحالي لا ينشئ inventory rows فاسدة بمالك مختلف مع نفس warehouse/product أو نفس PO. predicate ضروري لمنع adjust/approve/receive من تحديث صف tenant آخر؛ يلزم اختبار DB-corruption صريح. |
-| `IdempotencyKey.tenant_id == tenant` في مسار IntegrityError | 495 | equivalent بعد constraint | `uq_idem_tenant_route_key` يجعل تعارض الإدراج ممكناً فقط داخل نفس `(tenant_id, route, key)`؛ الاستعلام اللاحق بعد التعارض لا يستطيع التقاط صف tenant آخر. |
+## الاختبارات الجديدة
 
-الـ test gaps ليست موافقة على حذف predicates؛ هي حدود mutation suite الحالية موثقة صراحة. الـ guard يرفض survivor غير المصنف، والتصنيفات مثبتة في `SURVIVOR_CLASSES` داخل السكربت.
+- `test_corrupt_inventory_product_owner_cannot_leak_reorder_point`: يثبت أن predicate المنتج يمنع قراءة reorder point من tenant آخر.
+- `test_corrupt_inventory_adjust_cannot_update_other_tenant_row`: مع composite PK، يمنع predicate تحديث الصف الفاسد؛ النتيجة `409` والرصيد لم يتغير.
+- `test_corrupt_inventory_approve_cannot_update_other_tenant_row`: لا يتم تحديث on-order للمالك الفاسد.
+- `test_corrupt_inventory_receive_cannot_update_other_tenant_row`: لا يُسمح بالاستلام اعتماداً على on-order للمالك الفاسد.
+- `test_tenant_manifest_rejects_a_new_endpoint_with_existing_expression`: يثبت fail-closed للـmanifest.
+- `test_real_http_role_matrix_covers_invitation_to_jwt_to_policy`: ينشئ مستخدماً admin، يدعو الأدوار الثلاثة، يقبل الدعوات، يسجل الدخول، ثم يختبر كل `(method, path)` عبر JWT حقيقي مقابل golden table.
 
 ## CI
 
-أضيف job باسم `tenant-mutation` يعمل عند `workflow_dispatch` أو في الجدولة الليلية، مع PostgreSQL 16 وRedis 7، timeout قدره 45 دقيقة، ويشغّل نفس السكربت. لا يبطئ push/PR العادي بسبب كلفة تشغيل 18 نسخة اختبارية.
+- `tenant-manifest-guard` يعمل على كل push وpull request بلا تشغيل mutants.
+- `tenant-mutation` يعمل يدوياً أو ليلياً مع PostgreSQL 16 وRedis 7 وtimeout قدره 45 دقيقة.

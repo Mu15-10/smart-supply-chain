@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi import Depends, HTTPException
 from fastapi.routing import APIRoute
@@ -10,6 +14,13 @@ import app.main as main_module
 from app.core.policy import policy_for_route, validate_route_policy_table
 from app.main import app, enforce_route_policy
 from tests.test_phase1c_policy import GOLDEN_ROUTE_ROLES
+
+_MUTATION_TOOL = Path(__file__).resolve().parents[2] / "scripts" / "mutation_tenant_queries.py"
+_MUTATION_SPEC = importlib.util.spec_from_file_location("tenant_mutation_tool", _MUTATION_TOOL)
+assert _MUTATION_SPEC and _MUTATION_SPEC.loader
+tenant_mutation_tool = importlib.util.module_from_spec(_MUTATION_SPEC)
+sys.modules[_MUTATION_SPEC.name] = tenant_mutation_tool
+_MUTATION_SPEC.loader.exec_module(tenant_mutation_tool)
 
 
 def test_app_registers_one_central_policy_dependency():
@@ -27,6 +38,19 @@ def test_route_policy_dependency_is_a_fastapi_dependency():
     # Models the framework contract: policy enforcement is installed as a dependency, not handler-only code.
     assert callable(enforce_route_policy)
     assert Depends(enforce_route_policy).dependency is enforce_route_policy
+
+
+def test_tenant_manifest_rejects_a_new_endpoint_with_existing_expression(tmp_path: Path):
+    # Models the CI contract: a new tenant predicate cannot inherit an old classification.
+    dummy = tmp_path / "dummy.py"
+    dummy.write_text(
+        'def imaginary_endpoint(c):\n    return Inventory.tenant_id == c["tenant_id"]\n',
+        encoding="utf-8",
+    )
+    current = tenant_mutation_tool.discover(Path(__file__).resolve().parents[1] / "app")
+    dummy_target = tenant_mutation_tool.discover_file(dummy, "backend/app/dummy.py")
+    errors = tenant_mutation_tool.manifest_guard(current + dummy_target)
+    assert any("new tenant predicate requires manifest/classification" in error for error in errors)
 
 
 def test_protected_request_verifies_jwt_once_and_reuses_request_claims(monkeypatch: pytest.MonkeyPatch):

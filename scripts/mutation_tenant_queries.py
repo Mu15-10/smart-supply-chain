@@ -1,17 +1,9 @@
-"""AST-discovered tenant-predicate mutation audit.
-
-The audit discovers every comparison containing ``.tenant_id`` under ``backend/app``.
-Each comparison is replaced with the SQL-safe literal ``True`` in a disposable copy,
-then the isolation suite is executed.  The source tree is never modified: every mutant
-lives in its own TemporaryDirectory.  A failed test or import/syntax failure means the
-mutant was detected.  Survivors must be explicitly classified in ``SURVIVOR_CLASSES``.
-"""
+"""AST-discovered tenant-predicate mutation audit and manifest guard."""
 
 from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import shutil
 import subprocess
@@ -19,11 +11,15 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+MANIFEST_PATH = Path(__file__).with_name("tenant_predicate_manifest.json")
+
 
 @dataclass(frozen=True)
 class Target:
     id: str
     path: str
+    function: str
+    ordinal: int
     line: int
     column: int
     end_line: int
@@ -31,57 +27,112 @@ class Target:
     expression: str
 
 
-# A survivor is not silently accepted.  Each entry has a precise reason and is reviewed
-# against the database invariant or the documented test gap.
+# Only the two genuinely equivalent mutants remain classified after the corruption tests.
 SURVIVOR_CLASSES: dict[str, str] = {
-    "backend/app/main.py:b9b6e1332b06": (
+    "backend/app/main.py::refresh::1": (
         "equivalent: User.id is globally unique and the refresh row supplies the same tenant_id"
     ),
-    "backend/app/main.py:91acde7e9e3d": (
-        "test-gap: add a corrupted inventory row referencing another tenant's product and assert no reorder-point leakage"
-    ),
-    "backend/app/main.py:a584ab3ee3d0": (
-        "test-gap: add corrupted cross-tenant inventory rows and assert adjust/approve/receive cannot update them"
-    ),
-    "backend/app/main.py:71db307f96fa": (
+    "backend/app/main.py::claim_idem::2": (
         "equivalent: uq_idem_tenant_route_key makes a conflicting row tenant-identical"
     ),
 }
 
 
-def _target_id(path: str, node: ast.Compare, expression: str) -> str:
-    digest = hashlib.sha256(expression.encode("utf-8")).hexdigest()[:12]
-    # Digest-only identity remains stable when comments or formatting shift line numbers.
-    return f"{path}:{digest}"
+def _contains_tenant_compare(node: ast.AST) -> bool:
+    return isinstance(node, ast.Compare) and any(
+        isinstance(candidate, ast.Attribute) and candidate.attr == "tenant_id"
+        for candidate in ast.walk(node)
+    )
+
+
+def discover_file(path: Path, relative: str) -> list[Target]:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    function_for: dict[ast.AST, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                function_for[child] = node.name
+    ordinal_by_function: dict[str, int] = {}
+    targets: list[Target] = []
+    for node in ast.walk(tree):
+        if not _contains_tenant_compare(node) or not hasattr(node, "end_lineno"):
+            continue
+        assert isinstance(node, ast.Compare)
+        function = function_for.get(node, "<module>")
+        ordinal_by_function[function] = ordinal_by_function.get(function, 0) + 1
+        ordinal = ordinal_by_function[function]
+        expression = ast.get_source_segment(source, node)
+        if not expression:
+            continue
+        target_id = f"{relative}::{function}::{ordinal}"
+        targets.append(
+            Target(
+                id=target_id,
+                path=relative,
+                function=function,
+                ordinal=ordinal,
+                line=node.lineno,
+                column=node.col_offset,
+                end_line=node.end_lineno,
+                end_column=node.end_col_offset,
+                expression=expression,
+            )
+        )
+    return sorted(targets, key=lambda target: (target.path, target.line, target.column))
 
 
 def discover(app_root: Path) -> list[Target]:
     targets: list[Target] = []
     for path in sorted(app_root.rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
-        relative = path.relative_to(app_root.parent.parent).as_posix()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Compare) or not hasattr(node, "end_lineno"):
-                continue
-            segment = ast.get_source_segment(source, node)
-            if not segment or not any(
-                isinstance(candidate, ast.Attribute) and candidate.attr == "tenant_id"
-                for candidate in ast.walk(node)
-            ):
-                continue
-            targets.append(
-                Target(
-                    id=_target_id(relative, node, segment),
-                    path=relative,
-                    line=node.lineno,
-                    column=node.col_offset,
-                    end_line=node.end_lineno,
-                    end_column=node.end_col_offset,
-                    expression=segment,
-                )
-            )
+        targets.extend(
+            discover_file(path, path.relative_to(app_root.parent.parent).as_posix())
+        )
     return targets
+
+
+def manifest_records(targets: list[Target]) -> list[dict[str, object]]:
+    return [
+        {
+            "id": target.id,
+            "path": target.path,
+            "function": target.function,
+            "ordinal": target.ordinal,
+            "expression": target.expression,
+        }
+        for target in targets
+    ]
+
+
+def manifest_guard(
+    targets: list[Target], manifest_path: Path = MANIFEST_PATH
+) -> list[str]:
+    expected = {record["id"]: record for record in manifest_records(targets)}
+    actual = {
+        record["id"]: record
+        for record in json.loads(manifest_path.read_text(encoding="utf-8"))
+    }
+    errors: list[str] = []
+    for target_id in sorted(set(expected) | set(actual)):
+        if target_id not in expected:
+            errors.append(f"manifest has stale target: {target_id}")
+        elif target_id not in actual:
+            errors.append(
+                f"new tenant predicate requires manifest/classification: {target_id}"
+            )
+        elif expected[target_id] != actual[target_id]:
+            errors.append(f"manifest record changed: {target_id}")
+    classifications = set(SURVIVOR_CLASSES)
+    unknown = classifications - set(expected)
+    errors.extend(
+        f"classification has no discovered target: {target_id}"
+        for target_id in sorted(unknown)
+    )
+    return errors
 
 
 def _offsets(source: str) -> list[int]:
@@ -127,10 +178,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pytest", default="tests/test_phase1c_isolation.py")
     parser.add_argument("--json", dest="json_path", type=Path)
+    parser.add_argument("--write-manifest", action="store_true")
+    parser.add_argument("--guard-only", action="store_true")
     args = parser.parse_args()
-
     repo_root = Path(__file__).resolve().parents[1]
     targets = discover(repo_root / "backend" / "app")
+    if args.write_manifest:
+        MANIFEST_PATH.write_text(
+            json.dumps(manifest_records(targets), indent=2) + "\n", encoding="utf-8"
+        )
+        return 0
+    errors = manifest_guard(targets)
+    if errors:
+        print("CI GUARD FAILURE: " + " | ".join(errors))
+        return 1
+    if args.guard_only:
+        print(f"manifest guard passed: {len(targets)} tenant predicates")
+        return 0
+
     results: list[dict[str, object]] = []
     for target in targets:
         result, output = run_mutant(repo_root, target, args.pytest)
@@ -149,27 +214,16 @@ def main() -> int:
             f"{target.id} | {result}"
             + (f" | {classification}" if classification else "")
         )
-
-    discovered = {target.id for target in targets}
-    tested = {
-        item["target"]["id"] for item in results if item["result"] == "FAIL_DETECTED"
-    }
-    classified = {item["target"]["id"] for item in results if item["classification"]}
-    if discovered != tested | classified:
-        missing = sorted(discovered - tested - classified)
-        print(f"CI GUARD FAILURE: undispositioned targets: {json.dumps(missing)}")
-        return 1
     if any(item["classification"] == "UNCLASSIFIED_SURVIVOR" for item in results):
         print("CI GUARD FAILURE: survivor classification is required")
         return 1
-
-    print(
-        f"discovered={len(discovered)} tested={len(tested)} classified={len(classified)}"
-    )
     if args.json_path:
         args.json_path.write_text(
             json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
+    print(
+        f"discovered={len(targets)} tested={sum(item['result'] == 'FAIL_DETECTED' for item in results)} classified={sum(bool(item['classification']) for item in results)}"
+    )
     return 0
 
 

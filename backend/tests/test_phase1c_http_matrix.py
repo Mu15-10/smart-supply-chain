@@ -7,6 +7,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.test_phase1c_policy import GOLDEN_ROUTE_ROLES
 
 client = TestClient(app)
 SERVER_OWNED_FIELDS = ("tenant_id", "roles", "status", "id", "is_active", "version")
@@ -103,3 +104,102 @@ def test_http_mass_assignment_is_rejected_for_every_generated_body_route(path: s
     )
     response = client.request(method, path, headers=headers, json=body)
     assert response.status_code == 422, (path, field, response.text)
+
+
+def _role_tokens_via_invitation() -> dict[str, dict]:
+    """Create one real JWT per role through the public invitation lifecycle."""
+    suffix = uuid.uuid4().hex[:10]
+    admin_payload = {
+        "email": f"role-admin-{suffix}@example.com",
+        "password": "Madar!Secure2026",
+        "display_name": "role-admin",
+        "tenant_code": f"role-{suffix}",
+        "tenant_name": "role matrix tenant",
+    }
+    registered = client.post("/auth/register", json=admin_payload)
+    assert registered.status_code == 201, registered.text
+    admin_login = client.post(
+        "/auth/login", json={"email": admin_payload["email"], "password": admin_payload["password"]}
+    )
+    assert admin_login.status_code == 200, admin_login.text
+    tokens = {"admin": admin_login.json()}
+    for role in ("purchasing", "inventory", "viewer"):
+        email = f"role-{role}-{suffix}@example.com"
+        invitation = client.post(
+            "/auth/invitations",
+            headers={"Authorization": f"Bearer {tokens['admin']['access_token']}"},
+            json={"email": email, "role": role},
+        )
+        assert invitation.status_code == 201, invitation.text
+        invitation_token = invitation.json()["data"]["token"]
+        accepted = client.post(
+            "/auth/accept-invitation",
+            json={"token": invitation_token, "password": "Madar!Secure2026", "display_name": role},
+        )
+        assert accepted.status_code == 201, accepted.text
+        logged_in = client.post("/auth/login", json={"email": email, "password": "Madar!Secure2026"})
+        assert logged_in.status_code == 200, logged_in.text
+        tokens[role] = logged_in.json()
+    return tokens
+
+
+def _role_matrix_body(path: str, role: str, suffix: str) -> dict:
+    bodies = (
+        _valid_body(path)
+        if path
+        in {
+            "/auth/register",
+            "/auth/login",
+            "/auth/refresh",
+            "/auth/logout",
+            "/auth/invitations",
+            "/auth/accept-invitation",
+            "/suppliers",
+            "/products",
+            "/warehouses",
+            "/inventory/adjust",
+            "/purchase-orders",
+        }
+        else {}
+    )
+    if path == "/auth/register":
+        bodies.update(
+            email=f"route-register-{role}-{suffix}@example.com",
+            tenant_code=f"route-{role}-{suffix}",
+            tenant_name=f"route {role} tenant",
+        )
+    elif path == "/auth/login":
+        bodies.update(email=f"missing-{role}-{suffix}@example.com")
+    elif path == "/auth/invitations":
+        bodies.update(email=f"route-invite-{role}-{suffix}@example.com")
+    return bodies
+
+
+def test_real_http_role_matrix_covers_invitation_to_jwt_to_policy():
+    # Models the external lifecycle: admin invites each role, the invitee accepts and logs in,
+    # then every registered method/path is called with that real JWT and compared to golden policy.
+    tokens = _role_tokens_via_invitation()
+    suffix = uuid.uuid4().hex[:8]
+    ordered_routes = sorted(
+        (route for route in app.routes if isinstance(route, APIRoute)),
+        key=lambda route: route.path == "/auth/logout",
+    )
+    for route in ordered_routes:
+        for method in route.methods or ():
+            key = (method, route.path)
+            assert key in GOLDEN_ROUTE_ROLES, f"new route requires golden authorization decision: {key}"
+            expected_roles = GOLDEN_ROUTE_ROLES[key]
+            path = route.path.replace("{po_id}", str(uuid.uuid4()))
+            for role, role_tokens in tokens.items():
+                headers = {"Authorization": f"Bearer {role_tokens['access_token']}"}
+                body = _role_matrix_body(route.path, role, suffix) if method in {"POST", "PUT", "PATCH"} else None
+                response = client.request(method, path, headers=headers, json=body)
+                expected_forbidden = (
+                    expected_roles is not None and "authenticated" not in expected_roles and role not in expected_roles
+                )
+                assert (response.status_code == 403) == expected_forbidden, (
+                    key,
+                    role,
+                    response.status_code,
+                    response.text,
+                )
