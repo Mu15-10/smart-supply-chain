@@ -92,7 +92,7 @@ REDIS_URL=redis://127.0.0.1:6379/15
 
 ## CI البعيد
 
-- [Foundation CI #46162681835](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46162681835) على SHA `90773c2b52fb8a4f6df759ff084ea3e5eff8db96`: **success** بعد ثلاث تشغيلات متتالية على نفس SHA.
+- [Foundation CI #46163327657](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46163327657) على SHA `c2e9135462d93e4890827b51b767a2c4306b90db`: **success** بعد ثلاث تشغيلات متتالية على نفس SHA.
 - `backend`: success — PostgreSQL/Redis، pytest، Ruff، format، mypy، وAlembic round-trip/check.
 - `semgrep`: success — `semgrep==1.186.0` مع `p/python` و`p/security-audit`.
 - `frontend`, `container`, `dependency-audit`, و`secrets`: success.
