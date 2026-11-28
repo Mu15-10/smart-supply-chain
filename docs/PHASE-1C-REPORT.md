@@ -88,11 +88,11 @@ REDIS_URL=redis://127.0.0.1:6379/15
 
 ## الحالة والبوابة
 
-الوحدة الثانية وملحق G1 مغلقان تقنياً، والبدء بـ1-د يظل مشروطاً بموافقة المدير الكتابية. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`94a7a9e` و`13bc19e` و`0814d87` و`90773c2` مرفوعة إلى `hardening/phase-0`.
+الوحدة الثانية وملحق G1 مغلقان تقنياً، والبدء بـ1-د يظل مشروطاً بموافقة المدير الكتابية. commits `00a110d` و`cd7b41e` و`b63a21d` و`ca30cb6` و`94a7a9e` و`13bc19e` و`0814d87` و`90773c2` و`c2e9135` و`f7b8ed8` مرفوعة إلى `hardening/phase-0`.
 
 ## CI البعيد
 
-- [Foundation CI #46163327657](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46163327657) على SHA `c2e9135462d93e4890827b51b767a2c4306b90db`: **success** بعد ثلاث تشغيلات متتالية على نفس SHA.
+- [Foundation CI #46164044334](https://github.com/Mu15-10/smart-supply-chain/actions/runs/46164044334) على SHA `f7b8ed8126f9c4c89f970c30b168a7e88db070fc`: **success** بعد ثلاث تشغيلات متتالية على نفس SHA.
 - `backend`: success — PostgreSQL/Redis، pytest، Ruff، format، mypy، وAlembic round-trip/check.
 - `semgrep`: success — `semgrep==1.186.0` مع `p/python` و`p/security-audit`.
 - `frontend`, `container`, `dependency-audit`, و`secrets`: success.
