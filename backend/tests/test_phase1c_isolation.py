@@ -294,7 +294,7 @@ def test_corrupt_inventory_product_owner_cannot_leak_reorder_point():
             "reorderPoint": "0",
         }
     ]
-    assert "10" not in response.text
+    assert response.json()["data"][0]["reorderPoint"] != "10"
 
 
 def test_corrupt_inventory_adjust_cannot_update_other_tenant_row():
